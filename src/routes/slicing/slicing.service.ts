@@ -133,6 +133,15 @@ export async function sliceModel(
     );
   }
 
+  // Capture stdout + stderr so failure diagnostics survive the spawn-error
+  // wrapper. `execFile`'s default `(error) => ...` callback only carries the
+  // spawn-error message ("Command failed: <cmd>"), which is useless when the
+  // slicer rejected the input — the *reason* is in stderr (range checks,
+  // missing fields, profile compat failures all print there). The wider
+  // signature `(error, stdout, stderr)` keeps both around so we can include
+  // them in the AppError that propagates to Bambuddy.
+  let cliStdout = "";
+  let cliStderr = "";
   try {
     await new Promise<void>((resolve, reject) => {
       execFile(
@@ -140,8 +149,13 @@ export async function sliceModel(
         args,
         {
           encoding: "utf-8",
+          // Default 1MB is plenty for slicer error output but tiny if the
+          // slicer happens to dump a lot on success — bump to 16MB.
+          maxBuffer: 16 * 1024 * 1024,
         },
-        (error) => {
+        (error, stdout, stderr) => {
+          cliStdout = stdout ?? "";
+          cliStderr = stderr ?? "";
           if (error) {
             reject(error);
             return;
@@ -158,29 +172,27 @@ export async function sliceModel(
       json = JSON.parse(content);
     } catch {
       await fs.rm(workdir, { recursive: true, force: true });
-
       throw new AppError(
         500,
         "Failed to slice the model",
-        err instanceof Error ? err.message : String(err),
+        formatCliFailure(err, cliStdout, cliStderr),
       );
     }
 
     if (json?.error_string) {
       await fs.rm(workdir, { recursive: true, force: true });
-
       throw new AppError(
         500,
         `Slicing failed with error from slicer: ${json.error_string}`,
+        formatCliFailure(err, cliStdout, cliStderr),
       );
     }
 
     await fs.rm(workdir, { recursive: true, force: true });
-
     throw new AppError(
       500,
       "Failed to slice the model",
-      err instanceof Error ? err.message : String(err),
+      formatCliFailure(err, cliStdout, cliStderr),
     );
   }
 
@@ -240,6 +252,34 @@ export async function getMetaDataFromFile(
   }
 
   return data;
+}
+
+/**
+ * Build a useful `causeMessage` for an AppError when the slicer CLI exited
+ * non-zero. The default `execFile` error message is just
+ * `Command failed: <full cmdline>` — useless for diagnosing why the slicer
+ * rejected the input. Slicer CLIs print actual reasons (range checks,
+ * profile compat failures, missing keys) to **stderr**, occasionally with
+ * additional context on stdout. Combine them, prefer stderr (where the
+ * meaningful diagnostic lives), and trim aggressively so massive G-code
+ * dumps from successful-but-late failures don't blow out the response.
+ */
+function formatCliFailure(
+  err: unknown,
+  stdout: string,
+  stderr: string,
+): string {
+  const head = err instanceof Error ? err.message : String(err);
+  const stderrTrim = stderr.trim();
+  const stdoutTrim = stdout.trim();
+  const parts: string[] = [head];
+  if (stderrTrim) parts.push(`stderr: ${truncate(stderrTrim, 4096)}`);
+  if (stdoutTrim) parts.push(`stdout: ${truncate(stdoutTrim, 4096)}`);
+  return parts.join("\n");
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}… [truncated ${s.length - max} chars]` : s;
 }
 
 function parseMetaDataFromString(content: string): SliceMetaData {
