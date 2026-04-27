@@ -54,6 +54,16 @@ docker build --build-arg ORCA_VERSION=2.3.0 -t orca-slicer-api .
 docker run -d -p 3000:3000 --name orca-slicer-api orca-slicer-api
 ```
 
+#### Docker Compose
+
+A `docker-compose.yml` is included for convenience. Set `ORCA_API_PORT`
+in a `.env` file (or in your shell) to override the default host port.
+
+```bash
+docker compose up -d
+curl http://localhost:3000/health
+```
+
 ### Local (Development)
 
 ```bash
@@ -78,7 +88,8 @@ npm run dev
 `DATA_PATH` (required): Base directory for user uploaded profiles.\
 `NODE_ENV` (required): Sets if run in development or production.\
 `PORT` (optional): Port to run the server on, defaults to 3000.\
-`ASYNC_SLICE_RETENTION_MS` (optional): Time in milliseconds to retain asynchronous slice jobs, defaults to 3600000 (60 minutes). Cleanup runs every 60 minutes.
+`ASYNC_SLICE_RETENTION_MS` (optional): Time in milliseconds to retain asynchronous slice jobs, defaults to 3600000 (60 minutes). Cleanup runs every 60 minutes.\
+`BUNDLED_PROFILES_PATH` (optional): Absolute path to the bundled OrcaSlicer profiles directory (e.g. `<orca>/resources/profiles/BBL`). When unset the path is derived from `ORCASLICER_PATH` (`<dirname(ORCASLICER_PATH)>/resources/profiles/BBL`). Required for profile inheritance resolution — see below.
 
 Profiles are stored under:
 
@@ -90,6 +101,26 @@ Profiles are stored under:
 ```
 
 Each profile is a JSON file from OrcaSlicer.
+
+## Profile inheritance resolution
+
+OrcaSlicer / BambuStudio user exports inherit from user-facing preset names like `"Bambu Lab X1 Carbon 0.4 nozzle"`, and they carry a handful of GUI-only quirks that trip up the CLI:
+
+| Quirk | Why it breaks the CLI |
+|---|---|
+| `inherits: "<user-facing preset>"` | `--load-settings` does NOT run the GUI's preset-registry resolver, so even valid `fdm_*` parents are not pulled in. Required fields like `layer_change_gcode` end up missing. |
+| `from: "User"` | The CLI's compatibility check rejects `from: "User"` profiles as incompatible with `from: "system"` filament/process pairs, regardless of name match. |
+| `name: "# Bambu Lab X1 Carbon 0.4 nozzle"` | OrcaSlicer prefixes user clones of system presets with `# `. Bundled `compatible_printers` lists hold the un-prefixed names, so the literal compat match fails. |
+| `prime_tower_brim_width: "-1"` (or empty strings) | The GUI accepts `-1` / `""` as "auto"; the CLI's range check rejects them with `"... not in range [...]"`. |
+
+This service includes a profile resolver that addresses all four:
+
+1. Walks the full `inherits:` chain against `resources/profiles/BBL/{machine,process,filament}/`, merging child-over-parent, and emits a fully-flattened profile with no `inherits:` field. A dangling `inherits:` (parent not present in the bundle) is silently dropped — that mirrors how `--load-settings` itself ignores unresolvable inherits names, and lets profiles whose ancestor templates have been renamed across slicer versions still slice.
+2. Rewrites `from: "User"` → `from: "system"` on the resolved output, since after flattening the profile *is* a system preset's content.
+3. Strips the `# ` clone prefix from `name`, normalizing it to the system name in `compatible_printers`.
+4. Strips `"-1"` and `""` sentinel values (and arrays where every element is one of those), letting the merged ancestor or the CLI's compiled-in default fill in.
+
+The resolver runs automatically on every uploaded or stored profile that has an `inherits:` field. To use this in a custom deployment, ensure either `BUNDLED_PROFILES_PATH` is set or `ORCASLICER_PATH` points at an OrcaSlicer install whose `resources/profiles/BBL/` directory is present alongside it. The published Docker image satisfies this automatically.
 
 ## Security
 

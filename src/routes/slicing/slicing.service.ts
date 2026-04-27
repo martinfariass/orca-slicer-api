@@ -10,6 +10,12 @@ import type {
   UploadedProfiles,
 } from "./models";
 import { Open } from "unzipper";
+import {
+  getDefaultBundledProfilesPath,
+  resolveProfile,
+  type ProfileCategory,
+  type ProfileJson,
+} from "./profile-resolver";
 
 export async function sliceModel(
   file: Buffer,
@@ -30,10 +36,6 @@ export async function sliceModel(
 
     inPath = path.join(inputDir, filename);
     await fs.writeFile(inPath, file);
-
-    if (tempProfiles) {
-      await writeTempProfiles(tempProfiles, inputDir);
-    }
   } catch (error) {
     throw new AppError(
       500,
@@ -43,6 +45,47 @@ export async function sliceModel(
   }
 
   const basePath = process.env.DATA_PATH || path.join(process.cwd(), "data");
+  const bundledProfilesPath = getDefaultBundledProfilesPath();
+
+  let printerPath: string | undefined;
+  let presetPath: string | undefined;
+  let filamentPath: string | undefined;
+
+  try {
+    printerPath = await materializeProfile({
+      inputDir,
+      filename: "printer.json",
+      category: "machine",
+      uploaded: tempProfiles?.printer,
+      diskName: settings.printer,
+      diskBase: basePath,
+      diskCategoryDir: "printers",
+      bundledProfilesPath,
+    });
+    presetPath = await materializeProfile({
+      inputDir,
+      filename: "preset.json",
+      category: "process",
+      uploaded: tempProfiles?.preset,
+      diskName: settings.preset,
+      diskBase: basePath,
+      diskCategoryDir: "presets",
+      bundledProfilesPath,
+    });
+    filamentPath = await materializeProfile({
+      inputDir,
+      filename: "filament.json",
+      category: "filament",
+      uploaded: tempProfiles?.filament,
+      diskName: settings.filament,
+      diskBase: basePath,
+      diskCategoryDir: "filaments",
+      bundledProfilesPath,
+    });
+  } catch (error) {
+    await fs.rm(workdir, { recursive: true, force: true });
+    throw error;
+  }
 
   const args: string[] = [];
 
@@ -61,21 +104,12 @@ export async function sliceModel(
     args.push("--orient", settings.orient ? "1" : "0");
   }
 
-  if (tempProfiles?.printer && tempProfiles?.preset) {
-    const settingsArg = `${inputDir}/printer.json;${inputDir}/preset.json`;
-    args.push("--load-settings", settingsArg);
-  } else if (settings.printer && settings.preset) {
-    const settingsArg = `${basePath}/printers/${settings.printer}.json;${basePath}/presets/${settings.preset}.json`;
-    args.push("--load-settings", settingsArg);
+  if (printerPath && presetPath) {
+    args.push("--load-settings", `${printerPath};${presetPath}`);
   }
 
-  if (tempProfiles?.filament) {
-    args.push("--load-filaments", `${inputDir}/filament.json`);
-  } else if (settings.filament) {
-    args.push(
-      "--load-filaments",
-      `${basePath}/filaments/${settings.filament}.json`,
-    );
+  if (filamentPath) {
+    args.push("--load-filaments", filamentPath);
   }
 
   if (settings.bedType) {
@@ -284,33 +318,81 @@ function parseMetaDataFromString(content: string): SliceMetaData {
   return data;
 }
 
-async function writeTempProfiles(
-  profiles: UploadedProfiles,
-  inputDir: string,
-): Promise<void> {
+interface MaterializeProfileArgs {
+  inputDir: string;
+  filename: string;
+  category: ProfileCategory;
+  uploaded: Buffer | undefined;
+  diskName: string | undefined;
+  diskBase: string;
+  diskCategoryDir: string;
+  bundledProfilesPath: string | undefined;
+}
+
+async function materializeProfile(
+  args: MaterializeProfileArgs,
+): Promise<string | undefined> {
+  let raw: string;
+  let isUserUpload: boolean;
+
+  if (args.uploaded && args.uploaded.length > 0) {
+    raw = args.uploaded.toString("utf-8");
+    isUserUpload = true;
+  } else if (args.diskName) {
+    const diskPath = path.join(
+      args.diskBase,
+      args.diskCategoryDir,
+      `${args.diskName}.json`,
+    );
+    try {
+      raw = await fs.readFile(diskPath, "utf-8");
+    } catch (err) {
+      throw new AppError(
+        500,
+        `Failed to read stored ${args.category} profile "${args.diskName}"`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    isUserUpload = false;
+  } else {
+    return undefined;
+  }
+
+  let profile: ProfileJson;
   try {
-    const printerPath = path.join(inputDir, "printer.json");
-    const presetPath = path.join(inputDir, "preset.json");
-    const filamentPath = path.join(inputDir, "filament.json");
-
-    const writes: Promise<void>[] = [];
-
-    if (profiles.printer && profiles.printer.length > 0) {
-      writes.push(fs.writeFile(printerPath, profiles.printer));
-    }
-    if (profiles.preset && profiles.preset.length > 0) {
-      writes.push(fs.writeFile(presetPath, profiles.preset));
-    }
-    if (profiles.filament && profiles.filament.length > 0) {
-      writes.push(fs.writeFile(filamentPath, profiles.filament));
-    }
-
-    await Promise.all(writes);
-  } catch (error) {
+    profile = JSON.parse(raw) as ProfileJson;
+  } catch (err) {
+    const status = isUserUpload ? 400 : 500;
+    const sourceLabel = isUserUpload ? "uploaded" : "stored";
     throw new AppError(
-      500,
-      "Failed to write temporary profiles",
-      error instanceof Error ? error.message : String(error),
+      status,
+      `Invalid JSON in ${sourceLabel} ${args.category} profile`,
+      err instanceof Error ? err.message : String(err),
     );
   }
+
+  if (typeof profile.inherits === "string" && profile.inherits.length > 0) {
+    if (!args.bundledProfilesPath) {
+      throw new AppError(
+        500,
+        `Profile resolution required but bundled profiles path is not configured (category=${args.category} inherits="${profile.inherits}")`,
+        "Set BUNDLED_PROFILES_PATH or ORCASLICER_PATH so the resolver can locate resources/profiles/BBL.",
+      );
+    }
+    profile = await resolveProfile(profile, args.category, {
+      bundledProfilesPath: args.bundledProfilesPath,
+    });
+  }
+
+  const outPath = path.join(args.inputDir, args.filename);
+  try {
+    await fs.writeFile(outPath, JSON.stringify(profile));
+  } catch (err) {
+    throw new AppError(
+      500,
+      `Failed to write resolved ${args.category} profile`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  return outPath;
 }

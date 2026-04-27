@@ -1,0 +1,18 @@
+services:
+  orca-slicer-api:
+    image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.0
+    container_name: orca-slicer-api
+    restart: unless-stopped
+    ports:
+      - "${ORCA_API_PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
