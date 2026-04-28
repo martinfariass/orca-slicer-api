@@ -18,10 +18,22 @@ const router = Router();
 // slicer's read-only `resources/profiles/BBL/` tree, which only changes when
 // the container image is rebuilt — a long TTL is safe and avoids re-reading
 // hundreds of JSON files on every Slice modal open. `null` = "not yet built".
+type BundledFilament = {
+  name: string;
+  base_id: string | null;
+  // Filament-only metadata. Bambuddy uses these to pre-pick a profile per
+  // plate slot in the SliceModal multi-color flow. Bundled BBL profiles
+  // commonly carry `filament_type` on the leaf preset; `filament_colour` is
+  // typically missing on bundled profiles (color is a runtime spool attribute,
+  // not a profile attribute) but populated when present so the consumer can
+  // do exact-match where possible.
+  filament_type: string | null;
+  filament_colour: string | null;
+};
 type BundledIndex = {
   printer: { name: string; base_id: string | null }[];
   process: { name: string; base_id: string | null }[];
-  filament: { name: string; base_id: string | null }[];
+  filament: BundledFilament[];
 };
 let bundledIndexCache: BundledIndex | null = null;
 let bundledIndexCachedAt = 0;
@@ -45,9 +57,12 @@ router.get("/bundled", async (_req, res) => {
   }
 
   const result: BundledIndex = {
-    printer: await readBundledDir(path.join(bundledPath, "machine")),
-    process: await readBundledDir(path.join(bundledPath, "process")),
-    filament: await readBundledDir(path.join(bundledPath, "filament")),
+    printer: await readBundledDir(path.join(bundledPath, "machine"), false),
+    process: await readBundledDir(path.join(bundledPath, "process"), false),
+    filament: (await readBundledDir(
+      path.join(bundledPath, "filament"),
+      true,
+    )) as BundledFilament[],
   };
   bundledIndexCache = result;
   bundledIndexCachedAt = now;
@@ -56,7 +71,8 @@ router.get("/bundled", async (_req, res) => {
 
 async function readBundledDir(
   dir: string,
-): Promise<{ name: string; base_id: string | null }[]> {
+  includeFilamentMetadata: boolean,
+): Promise<({ name: string; base_id: string | null } | BundledFilament)[]> {
   if (!fs.existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -64,7 +80,7 @@ async function readBundledDir(
   } catch {
     return [];
   }
-  const out: { name: string; base_id: string | null }[] = [];
+  const out: ({ name: string; base_id: string | null } | BundledFilament)[] = [];
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     const filePath = path.join(dir, entry);
@@ -74,6 +90,8 @@ async function readBundledDir(
         name?: string;
         inherits?: string;
         instantiation?: string;
+        filament_type?: string | string[];
+        filament_colour?: string | string[];
       };
       // Bundled profiles ship a mix of concrete presets and abstract bases
       // (e.g. `fdm_filament_pla`). Skip the latter so the slicer modal only
@@ -81,7 +99,16 @@ async function readBundledDir(
       // BBL convention for "this is a leaf preset".
       if (json.instantiation && json.instantiation !== "true") continue;
       if (!json.name) continue;
-      out.push({ name: json.name, base_id: json.inherits ?? null });
+      const base = { name: json.name, base_id: json.inherits ?? null };
+      if (includeFilamentMetadata) {
+        out.push({
+          ...base,
+          filament_type: firstScalar(json.filament_type),
+          filament_colour: firstScalar(json.filament_colour),
+        });
+      } else {
+        out.push(base);
+      }
     } catch {
       // Corrupted / unreadable individual file — skip without breaking the
       // rest of the listing.
@@ -91,6 +118,17 @@ async function readBundledDir(
   // Stable alphabetical order by name so the dropdown is predictable.
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+function firstScalar(value: string | string[] | undefined): string | null {
+  // OrcaSlicer stores per-extruder fields like `filament_type` as arrays
+  // (e.g. `["PLA"]` for single-extruder, `["PLA", "PETG"]` for bi-material).
+  // For pre-pick matching the first slot is what matters; the caller already
+  // knows which slot it's matching to and a per-slot value isn't meaningful
+  // on a bundled profile that hasn't been bound to a specific extruder yet.
+  if (Array.isArray(value)) return value[0] ?? null;
+  if (typeof value === "string" && value.length > 0) return value;
+  return null;
 }
 
 router.post("/:category", uploadJson.single("file"), async (req, res) => {

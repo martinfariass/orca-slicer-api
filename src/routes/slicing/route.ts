@@ -20,7 +20,9 @@ router.post(
     { name: "file", maxCount: 1 },
     { name: "printerProfile", maxCount: 1 },
     { name: "presetProfile", maxCount: 1 },
-    { name: "filamentProfile", maxCount: 1 },
+    // Bambu Lab supports up to 16 AMS slots (4 AMS units of 4 trays each).
+    // Accepting that many filament profiles covers every realistic input.
+    { name: "filamentProfile", maxCount: 16 },
   ]),
   async (req, res) => {
     if (!req.files || Array.isArray(req.files)) {
@@ -45,7 +47,7 @@ router.post(
       {
         printer: files["printerProfile"]?.[0]?.buffer,
         preset: files["presetProfile"]?.[0]?.buffer,
-        filament: files["filamentProfile"]?.[0]?.buffer,
+        filaments: files["filamentProfile"]?.map((f) => f.buffer) ?? [],
       } as UploadedProfiles,
     );
 

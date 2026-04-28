@@ -1,7 +1,13 @@
 export interface SlicingSettings {
   printer?: string;
   preset?: string;
+  // Single legacy filament name (kept for backwards-compat with clients that
+  // pre-date multi-color support).
   filament?: string;
+  // Multi-color: comma- or semicolon-separated filament names. Equivalent to
+  // sending multiple `filamentProfile` parts; the body form is for clients
+  // that pick by-name on disk rather than uploading content.
+  filaments?: string;
   bedType?: string;
   plate?: string;
   multicolorOnePlate?: boolean;
@@ -26,5 +32,8 @@ export type Category = "printers" | "presets" | "filaments";
 export interface UploadedProfiles {
   printer?: Buffer;
   preset?: Buffer;
-  filament?: Buffer;
+  // Multi-color: one Buffer per filament slot, in plate order. Empty / single
+  // entries handled identically by the slicing service so legacy single-color
+  // clients continue to work without changes.
+  filaments?: Buffer[];
 }

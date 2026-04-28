@@ -49,7 +49,7 @@ export async function sliceModel(
 
   let printerPath: string | undefined;
   let presetPath: string | undefined;
-  let filamentPath: string | undefined;
+  let filamentPaths: string[] = [];
 
   try {
     printerPath = await materializeProfile({
@@ -72,16 +72,33 @@ export async function sliceModel(
       diskCategoryDir: "presets",
       bundledProfilesPath,
     });
-    filamentPath = await materializeProfile({
-      inputDir,
-      filename: "filament.json",
-      category: "filament",
-      uploaded: tempProfiles?.filament,
-      diskName: settings.filament,
-      diskBase: basePath,
-      diskCategoryDir: "filaments",
-      bundledProfilesPath,
-    });
+
+    // Resolve filaments in plate order: each upload buffer (or each
+    // comma-separated diskName) becomes a separate filament_N.json on disk.
+    // The CLI later joins them as semicolon-separated --load-filaments arg.
+    // Three input shapes, in priority order:
+    //   1. tempProfiles.filaments[]  — N uploaded buffers (new multi-color)
+    //   2. settings.filaments        — comma/semicolon-separated diskNames
+    //   3. settings.filament         — legacy single diskName (back-compat)
+    const uploadedFilaments = tempProfiles?.filaments ?? [];
+    const diskFilamentNames = parseDiskFilamentNames(settings);
+    const filamentSpecs: Array<{ uploaded?: Buffer; diskName?: string }> =
+      uploadedFilaments.length > 0
+        ? uploadedFilaments.map((u) => ({ uploaded: u }))
+        : diskFilamentNames.map((n) => ({ diskName: n }));
+    for (let i = 0; i < filamentSpecs.length; i++) {
+      const p = await materializeProfile({
+        inputDir,
+        filename: `filament_${i + 1}.json`,
+        category: "filament",
+        uploaded: filamentSpecs[i].uploaded,
+        diskName: filamentSpecs[i].diskName,
+        diskBase: basePath,
+        diskCategoryDir: "filaments",
+        bundledProfilesPath,
+      });
+      if (p) filamentPaths.push(p);
+    }
   } catch (error) {
     await fs.rm(workdir, { recursive: true, force: true });
     throw error;
@@ -108,8 +125,10 @@ export async function sliceModel(
     args.push("--load-settings", `${printerPath};${presetPath}`);
   }
 
-  if (filamentPath) {
-    args.push("--load-filaments", filamentPath);
+  if (filamentPaths.length > 0) {
+    // OrcaSlicer / BambuStudio CLI expects ALL filament profiles in a single
+    // --load-filaments arg, semicolon-separated, in plate slot order.
+    args.push("--load-filaments", filamentPaths.join(";"));
   }
 
   if (settings.bedType) {
@@ -280,6 +299,21 @@ function formatCliFailure(
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}… [truncated ${s.length - max} chars]` : s;
+}
+
+export function parseDiskFilamentNames(settings: SlicingSettings): string[] {
+  // settings.filaments wins over the legacy single settings.filament so a
+  // multi-color caller can drop the legacy field without it sneaking back in.
+  if (settings.filaments && settings.filaments.length > 0) {
+    return settings.filaments
+      .split(/[,;]/)
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+  }
+  if (settings.filament && settings.filament.length > 0) {
+    return [settings.filament];
+  }
+  return [];
 }
 
 function parseMetaDataFromString(content: string): SliceMetaData {
