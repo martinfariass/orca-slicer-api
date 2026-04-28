@@ -7,12 +7,36 @@ import type {
   UploadedProfiles,
 } from "./models";
 import { getMetaDataFromFile, sliceModel } from "./slicing.service";
+import { progressStore } from "./progress-store";
 import fs from "fs/promises";
 import path from "path";
 import archiver from "archiver";
 import { generateMetaDataHeaders } from "./helpers";
 
 const router = Router();
+
+// Live progress endpoint. Bambuddy generates a request_id when it submits
+// to POST /slice and polls this in parallel (the POST holds the
+// connection open for the duration of the slice — multi-second to
+// multi-minute on complex models — so the only way to surface progress
+// to the user is a side-channel like this one). Returns 404 once the
+// slice has completed and the entry's grace window has elapsed.
+router.get("/progress/:requestId", (req, res) => {
+  const id = req.params.requestId;
+  const snapshot = progressStore.get(id);
+  if (!snapshot) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.json({
+    stage: snapshot.stage,
+    total_percent: snapshot.totalPercent,
+    plate_percent: snapshot.platePercent,
+    plate_index: snapshot.plateIndex,
+    plate_count: snapshot.plateCount,
+    updated_at: snapshot.updatedAt,
+  });
+});
 
 router.post(
   "/",

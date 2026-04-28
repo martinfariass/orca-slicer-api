@@ -14,6 +14,11 @@ export interface SlicingSettings {
   arrange?: boolean;
   orient?: boolean;
   exportType?: "gcode" | "3mf";
+  // Optional caller-provided id used to publish live progress to the
+  // ProgressStore. The same id is read back via `GET /slice/progress/:id`
+  // so a polling client can show "Generating G-code (75%)" while the
+  // sync /slice POST is still in flight.
+  requestId?: string;
 }
 
 export interface SliceResult {

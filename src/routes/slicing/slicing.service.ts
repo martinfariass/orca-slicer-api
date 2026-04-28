@@ -1,7 +1,7 @@
-import { promises as fs } from "fs";
+import { promises as fs, createReadStream } from "fs";
 import * as path from "path";
 import * as os from "os";
-import { execFile } from "child_process";
+import { spawn, execFile } from "child_process";
 import { AppError } from "../../middleware/error";
 import type {
   SlicingSettings,
@@ -16,6 +16,7 @@ import {
   type ProfileCategory,
   type ProfileJson,
 } from "./profile-resolver";
+import { progressStore, parseProgressLine } from "./progress-store";
 
 export async function sliceModel(
   file: Buffer,
@@ -153,37 +154,77 @@ export async function sliceModel(
   }
 
   // Capture stdout + stderr so failure diagnostics survive the spawn-error
-  // wrapper. `execFile`'s default `(error) => ...` callback only carries the
-  // spawn-error message ("Command failed: <cmd>"), which is useless when the
-  // slicer rejected the input — the *reason* is in stderr (range checks,
-  // missing fields, profile compat failures all print there). The wider
-  // signature `(error, stdout, stderr)` keeps both around so we can include
-  // them in the AppError that propagates to Bambuddy.
+  // wrapper. The CLI prints the *reason* it rejected an input (range checks,
+  // missing fields, profile compat failures) to stderr; we keep both streams
+  // around so we can include them in the AppError that propagates to
+  // Bambuddy. We also wire up `--pipe` to a per-request FIFO so the slicer's
+  // structured JSON progress events land in the ProgressStore — Bambuddy
+  // polls /slice/progress/:requestId in parallel with this call to drive
+  // a live progress toast.
   let cliStdout = "";
   let cliStderr = "";
+  const requestId = settings.requestId;
+  let fifoPath: string | undefined;
+  let progressReader: { close: () => void } | undefined;
+  if (requestId) {
+    progressStore.start(requestId);
+    fifoPath = path.join(workdir, `progress.fifo`);
+    try {
+      // mkfifo isn't in node's fs API; shell out via the busybox/util-linux
+      // binary that's present in every distro the sidecar runs on.
+      await new Promise<void>((resolve, reject) => {
+        execFile("mkfifo", [fifoPath as string], (err) => (err ? reject(err) : resolve()));
+      });
+      args.push("--pipe", fifoPath);
+      progressReader = startProgressReader(fifoPath, requestId);
+    } catch (err) {
+      // FIFO creation is best-effort — if it fails (e.g. mkfifo missing,
+      // unsupported FS), fall back to the no-progress path rather than
+      // failing the slice.
+      console.warn(`Progress FIFO setup failed: ${(err as Error).message}`);
+      fifoPath = undefined;
+    }
+  }
   try {
     await new Promise<void>((resolve, reject) => {
-      execFile(
-        process.env.ORCASLICER_PATH as string,
-        args,
-        {
-          encoding: "utf-8",
-          // Default 1MB is plenty for slicer error output but tiny if the
-          // slicer happens to dump a lot on success — bump to 16MB.
-          maxBuffer: 16 * 1024 * 1024,
-        },
-        (error, stdout, stderr) => {
-          cliStdout = stdout ?? "";
-          cliStderr = stderr ?? "";
-          if (error) {
-            reject(error);
-            return;
-          }
+      const child = spawn(process.env.ORCASLICER_PATH as string, args, {
+        // Inherit env so DISPLAY / XDG_* etc. (used by some slicer plugins)
+        // remain consistent with the previous execFile invocation.
+        env: process.env,
+      });
+      // Buffer stdout/stderr — same 16MB cap the old execFile path used.
+      const STDOUT_LIMIT = 16 * 1024 * 1024;
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let stdoutLen = 0;
+      let stderrLen = 0;
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (stdoutLen + chunk.length <= STDOUT_LIMIT) {
+          stdoutChunks.push(chunk);
+          stdoutLen += chunk.length;
+        }
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderrLen + chunk.length <= STDOUT_LIMIT) {
+          stderrChunks.push(chunk);
+          stderrLen += chunk.length;
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", (code, signal) => {
+        cliStdout = Buffer.concat(stdoutChunks).toString("utf-8");
+        cliStderr = Buffer.concat(stderrChunks).toString("utf-8");
+        if (code === 0) {
           resolve();
-        },
-      );
+        } else {
+          const detail = signal ? `signal ${signal}` : `exit code ${code}`;
+          reject(new Error(`Slicer process failed (${detail})`));
+        }
+      });
     });
   } catch (err) {
+    if (progressReader) progressReader.close();
+    if (requestId) progressStore.finish(requestId);
     const resultJsonPath = path.join(outputDir, "result.json");
     let json;
     try {
@@ -214,6 +255,12 @@ export async function sliceModel(
       formatCliFailure(err, cliStdout, cliStderr),
     );
   }
+
+  // Slice succeeded — close the progress reader and schedule the
+  // request_id's grace cleanup so a final poll still sees the terminal
+  // frame ("All done, Success" / total_percent=100).
+  if (progressReader) progressReader.close();
+  if (requestId) progressStore.finish(requestId);
 
   const files = await fs.readdir(outputDir);
   let resultFiles: string[];
@@ -283,6 +330,65 @@ export async function getMetaDataFromFile(
  * meaningful diagnostic lives), and trim aggressively so massive G-code
  * dumps from successful-but-late failures don't blow out the response.
  */
+/**
+ * Spawn a non-blocking reader for the slicer's progress FIFO. Each line
+ * is parsed and pushed into the ProgressStore. Returns a closer; the
+ * caller is responsible for invoking it on slice exit (success OR
+ * failure) so the read stream doesn't leak.
+ *
+ * The FIFO is opened *after* `--pipe` is on the args list — orca creates
+ * the writer side when it spawns, and createReadStream on a missing FIFO
+ * would ENOENT. mkfifo runs synchronously beforehand so the read open
+ * always finds the FIFO present even if the slicer is slow to attach.
+ */
+function startProgressReader(
+  fifoPath: string,
+  requestId: string,
+): { close: () => void } {
+  let buffer = "";
+  let closed = false;
+  // The FIFO read end blocks until the slicer opens the write end.
+  // Node's createReadStream + flag 'r' opens with O_RDONLY which blocks;
+  // we want O_NONBLOCK so the read open returns immediately and waits
+  // for data via epoll. If the slicer dies before writing anything, the
+  // read end gets EOF cleanly instead of hanging.
+  const stream = createReadStream(fifoPath, {
+    flags: "r",
+    encoding: "utf-8",
+  });
+  stream.on("data", (chunk: string | Buffer) => {
+    if (closed) return;
+    buffer += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    let nl: number;
+    while ((nl = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      const parsed = parseProgressLine(line);
+      if (parsed) {
+        progressStore.update(requestId, {
+          stage: parsed.stage ?? "",
+          totalPercent: parsed.totalPercent ?? 0,
+          platePercent: parsed.platePercent ?? 0,
+          plateIndex: parsed.plateIndex ?? 0,
+          plateCount: parsed.plateCount ?? 0,
+        });
+      }
+    }
+  });
+  stream.on("error", (err) => {
+    // Reader errors must not bubble — progress is best-effort. Common
+    // case: slicer exits before writing anything, FIFO read end gets
+    // EBADF when we close the write side without flushing.
+    console.warn(`Progress FIFO read error (${requestId}): ${err.message}`);
+  });
+  return {
+    close: () => {
+      closed = true;
+      stream.destroy();
+    },
+  };
+}
+
 function formatCliFailure(
   err: unknown,
   stdout: string,
