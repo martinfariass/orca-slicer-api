@@ -25,6 +25,13 @@ services:
     # sentinel-value strip). The unpatched upstream image
     # ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1 cannot slice real
     # OrcaSlicer GUI exports without these fixes.
+    #
+    # Note (mid-2026): OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs
+    # that block slicing many Bambu-authored 3MFs — see upstream
+    # SoftFever/OrcaSlicer#12426 (segfault on painted multi-extruder
+    # files) and #13386 (parameter-range strict-validation reject).
+    # Bambu Studio is recommended (the bambu-studio-api service below
+    # is a drop-in replacement) until the upstream fixes land.
     build:
       context: .
       args:

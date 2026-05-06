@@ -84,6 +84,15 @@ image — BambuStudio's CLI accepts the same `--load-settings` / `--slice`
 flags, so only the bundled AppImage and a few env vars differ. Pin the
 BambuStudio version with `BAMBU_VERSION=02.06.00.51 docker compose ...`.
 
+> **Slicing Bambu-authored 3MFs in mid-2026?** OrcaSlicer 2.3.2 / 2.4.0-dev
+> have known CLI bugs that block slicing many Bambu-authored 3MFs — see
+> upstream [OrcaSlicer#12426](https://github.com/SoftFever/OrcaSlicer/issues/12426)
+> (segfault on painted multi-extruder files) and
+> [OrcaSlicer#13386](https://github.com/SoftFever/OrcaSlicer/issues/13386)
+> (parameter-range strict-validation reject). Bambu Studio is recommended
+> until the upstream fixes land — the `bambu-studio-api` service above is
+> a drop-in replacement with the same API surface.
+
 ### Local (Development)
 
 ```bash
