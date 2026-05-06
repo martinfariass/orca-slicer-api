@@ -19,6 +19,20 @@ export interface SlicingSettings {
   // so a polling client can show "Generating G-code (75%)" while the
   // sync /slice POST is still in flight.
   requestId?: string;
+  // Bundle selectors: when `bundle` is set, the slicing service materializes
+  // the per-category JSONs from DATA_PATH/bundles/<id>/{printer,process,
+  // filament}/<name>.json instead of from the flat presets/filaments/printers
+  // dirs that `printer` / `preset` / `filament` consult. The bundle's delta
+  // files still flow through the inherits-resolver before invoking the CLI,
+  // same as any uploaded or disk-loaded profile. printerName/processName/
+  // filamentName refer to preset names within the bundle (with or without the
+  // BambuStudio "# " user-clone prefix); filamentNames is comma/semicolon-
+  // separated for multi-color jobs.
+  bundle?: string;
+  printerName?: string;
+  processName?: string;
+  filamentName?: string;
+  filamentNames?: string;
 }
 
 export interface SliceResult {

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { uploadJson } from "../../middleware/upload";
+import { uploadJson, uploadBundle } from "../../middleware/upload";
 import type { Category } from "../slicing/models";
 import {
   saveSetting,
@@ -9,6 +9,12 @@ import {
   getSetting,
   deleteSetting,
 } from "./settings.service";
+import {
+  importBundle,
+  listBundles,
+  readBundleSummary,
+  deleteBundle,
+} from "./bundle.service";
 import { AppError } from "../../middleware/error";
 import { getDefaultBundledProfilesPath } from "../slicing/profile-resolver";
 
@@ -130,6 +136,49 @@ function firstScalar(value: string | string[] | undefined): string | null {
   if (typeof value === "string" && value.length > 0) return value;
   return null;
 }
+
+// Bundle routes are defined before /:category so the literal "bundle" /
+// "bundles" path segments don't get matched as a category by the more
+// generic handlers below (validateCategory would reject them).
+//
+// POST /profiles/bundle
+//   Upload a BambuStudio "Printer Preset Bundle" (.bbscfg). Idempotent —
+//   re-uploading the same file yields the same bundle id and re-uses the
+//   existing extracted directory.
+router.post("/bundle", uploadBundle.single("file"), async (req, res) => {
+  if (!req.file) {
+    throw new AppError(400, "Bundle file is required");
+  }
+  const summary = await importBundle(req.file.buffer);
+  res.status(201).json(summary);
+});
+
+// GET /profiles/bundles
+//   List every bundle stored in DATA_PATH/bundles. Each summary names the
+//   inner printer / process / filament presets a slice request can pick
+//   from, so the consumer doesn't need a second round-trip per bundle to
+//   build a Slice modal.
+router.get("/bundles", async (_req, res) => {
+  const bundles = await listBundles();
+  res.status(200).json(bundles);
+});
+
+// GET /profiles/bundles/:id
+//   Single-bundle summary (same shape as the list entry). Useful when a
+//   client persists the id and wants to re-confirm the bundle still exists
+//   and which presets it contains before showing slice options.
+router.get("/bundles/:id", async (req, res) => {
+  const summary = await readBundleSummary(req.params.id);
+  res.status(200).json(summary);
+});
+
+// DELETE /profiles/bundles/:id
+//   Remove a bundle and its extracted preset files. Slicing requests
+//   referencing this id will fail with 404 afterwards.
+router.delete("/bundles/:id", async (req, res) => {
+  await deleteBundle(req.params.id);
+  res.status(204).send();
+});
 
 router.post("/:category", uploadJson.single("file"), async (req, res) => {
   const name = req.body.name;
