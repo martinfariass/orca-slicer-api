@@ -7,14 +7,38 @@ on:
   workflow_dispatch:
     inputs:
       orca_version:
-        description: "OrcaSlicer version to test"
+        description: "OrcaSlicer version to test (orcaslicer matrix slot)"
         required: false
         default: "2.3.0"
+      bambu_version:
+        description: "BambuStudio version to test (bambu-studio matrix slot)"
+        required: false
+        default: "02.06.00.51"
 
 jobs:
   test:
-    name: E2E Test (Orca v${{ inputs.orca_version }})
+    name: E2E Test (${{ matrix.slicer.label }})
     runs-on: ubuntu-latest
+
+    # Matrix runs the e2e suite against both supported slicers. Tests that
+    # depend on a specific slicer's BBL profile set (e.g. the bundle suite,
+    # which feeds an H2D fixture) need the right image — Bambu's set
+    # includes H2D, OrcaSlicer 2.3.x's typically doesn't yet. Both jobs
+    # build in parallel so PR feedback isn't double-serialised.
+    strategy:
+      fail-fast: false
+      matrix:
+        slicer:
+          - label: "Orca v${{ inputs.orca_version }}"
+            dockerfile: tests/docker/Dockerfile.test
+            tag: orca-v${{ inputs.orca_version }}-api-test
+            build_arg_name: ORCA_VERSION
+            build_arg_value: ${{ inputs.orca_version }}
+          - label: "BambuStudio v${{ inputs.bambu_version }}"
+            dockerfile: tests/docker/Dockerfile.test.bambu-studio
+            tag: bambu-v${{ inputs.bambu_version }}-api-test
+            build_arg_name: BAMBU_VERSION
+            build_arg_value: ${{ inputs.bambu_version }}
 
     steps:
       - name: Checkout repository
@@ -27,15 +51,15 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: tests/docker/Dockerfile.test
+          file: ${{ matrix.slicer.dockerfile }}
           push: false
           load: true
-          tags: orca-v${{ inputs.orca_version }}-api-test
+          tags: ${{ matrix.slicer.tag }}
           build-args: |
-            ORCA_VERSION=${{ inputs.orca_version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ matrix.slicer.build_arg_name }}=${{ matrix.slicer.build_arg_value }}
+          cache-from: type=gha,scope=${{ matrix.slicer.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slicer.tag }}
 
       - name: Run tests
         run: |
-          docker run --rm orca-v${{ inputs.orca_version }}-api-test
+          docker run --rm ${{ matrix.slicer.tag }}
