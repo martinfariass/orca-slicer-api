@@ -1,12 +1,41 @@
+# Slicer API sidecars for Bambuddy.
+#
+# Two services, one per slicer. Bambuddy picks which to call based on the
+# user's `preferred_slicer` setting (Settings → Workflow → Preferred Slicer)
+# combined with the `Use Slicer API` toggle.
+#
+#   bambu-studio-api → host port 3001
+#   orca-slicer-api  → host port 3003
+#
+# (Port 3002 is reserved by Bambuddy's virtual-printer bind/detect, hence
+# the gap. 3000 is also VP-reserved.)
+#
+# Bambuddy talks to them at:
+#   http://<docker-host>:3001/slice  (BambuStudio)
+#   http://<docker-host>:3003/slice  (OrcaSlicer)
+#
+# Override the host ports via environment if you need to:
+#   ORCA_API_PORT=3303 BAMBU_API_PORT=3301 docker compose up -d
+
 services:
   orca-slicer-api:
-    image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.0
+    # Built locally from this repo's Dockerfile (which carries the
+    # `bambuddy/profile-resolver` patches: full inherits chain walking,
+    # from-User → from-system rewrite, "# " name-prefix strip, and
+    # sentinel-value strip). The unpatched upstream image
+    # ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1 cannot slice real
+    # OrcaSlicer GUI exports without these fixes.
+    build:
+      context: .
+      args:
+        ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
+    image: orca-slicer-api:resolver-orca${ORCA_VERSION:-2.3.2}
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
-      - "${ORCA_API_PORT:-3000}:3000"
+      - "${ORCA_API_PORT:-3003}:3000"
     volumes:
-      - ./data:/app/data
+      - ./data/orca:/app/data
     environment:
       NODE_ENV: production
       PORT: "3000"
@@ -16,3 +45,37 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  # BambuStudio API sidecar.
+  #
+  # Built locally from Dockerfile.bambu-studio — same Node wrapper as
+  # orca-slicer-api, but bundles BambuStudio's AppImage instead. The first
+  # `docker compose --profile bambu up -d` will download a ~220MB AppImage
+  # and build the image (~5 min). Subsequent runs reuse the local image.
+  #
+  # Tag the build to avoid rebuilds: BAMBU_VERSION is forwarded to the
+  # Dockerfile and pinned to a known-good release.
+  bambu-studio-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.bambu-studio
+      args:
+        BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"
+    image: bambu-studio-api:bambu${BAMBU_VERSION:-02.06.00.51}
+    container_name: bambu-studio-api
+    restart: unless-stopped
+    ports:
+      - "${BAMBU_API_PORT:-3001}:3000"
+    volumes:
+      - ./data/bambu:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    profiles:
+      - bambu

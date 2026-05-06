@@ -1,6 +1,6 @@
 FROM node:22-bookworm AS build
 
-ARG ORCA_VERSION=2.3.1
+ARG ORCA_VERSION=2.3.2
 ARG TARGETARCH
 
 WORKDIR /app
@@ -42,7 +42,8 @@ RUN apt-get update \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 	nodejs \
-	libgl1 libgl1-mesa-dri libegl1 \
+	libgl1 libgl1-mesa-dri libegl1 libopengl0 libglu1-mesa \
+	libsm6 libice6 libmspack0 \
 	libgtk-3-0 \
 	libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
 	libwebkit2gtk-4.1-0 \

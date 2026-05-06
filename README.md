@@ -56,13 +56,33 @@ docker run -d -p 3000:3000 --name orca-slicer-api orca-slicer-api
 
 #### Docker Compose
 
-A `docker-compose.yml` is included for convenience. Set `ORCA_API_PORT`
-in a `.env` file (or in your shell) to override the default host port.
+A `docker-compose.yml` is included for convenience. It defines two services:
+
+| Service | Host port | Image source |
+|---|---|---|
+| `orca-slicer-api` | **3003** | Built locally from this repo's `Dockerfile` (default profile, carries the `bambuddy/profile-resolver` patches — see below) |
+| `bambu-studio-api` | **3001** | Built locally from `Dockerfile.bambu-studio` (gated behind `bambu` profile) |
+
+Ports 3000 and 3002 are reserved by Bambuddy's virtual-printer feature, so
+the OrcaSlicer sidecar sits on 3003. Override either host port via
+`ORCA_API_PORT` / `BAMBU_API_PORT` in your `.env` if you don't run Bambuddy
+on the same host.
 
 ```bash
+# Start the OrcaSlicer sidecar only (default profile):
 docker compose up -d
-curl http://localhost:3000/health
+curl http://localhost:3003/health
+
+# Build + start both. First build pulls a ~220MB BambuStudio AppImage
+# and takes a few minutes; subsequent runs reuse the cached image.
+docker compose --profile bambu up -d --build
+curl http://localhost:3001/health
 ```
+
+`Dockerfile.bambu-studio` reuses the same Node wrapper as the OrcaSlicer
+image — BambuStudio's CLI accepts the same `--load-settings` / `--slice`
+flags, so only the bundled AppImage and a few env vars differ. Pin the
+BambuStudio version with `BAMBU_VERSION=02.06.00.51 docker compose ...`.
 
 ### Local (Development)
 
