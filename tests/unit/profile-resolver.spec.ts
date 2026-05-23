@@ -5,6 +5,7 @@ import * as path from "path";
 import {
   ensureProfileType,
   mergeProfiles,
+  normalizeFromField,
   resolveProfile,
   getDefaultBundledProfilesPath,
   type ProfileJson,
@@ -329,6 +330,55 @@ describe("ensureProfileType", () => {
     // chain) without juggling identities.
     const profile: ProfileJson = { name: "x" };
     const result = ensureProfileType(profile, "machine");
+    expect(result).toBe(profile);
+  });
+});
+
+describe("normalizeFromField", () => {
+  it("rewrites 'User' to 'system'", () => {
+    // User clones flow through resolveProfile's inherits walk and emerge
+    // functionally equivalent to a system preset; the CLI's compat check
+    // rejects them with `from User unsupported` otherwise.
+    const profile: ProfileJson = { name: "x", from: "User" };
+    normalizeFromField(profile);
+    expect(profile.from).toBe("system");
+  });
+
+  it("rewrites 'System' (capital S) to 'system'", () => {
+    // BambuStudio's "Export Preset Bundle" for a System-tier root preset
+    // writes literal "System" — the GUI accepts that casing because its
+    // check is case-insensitive, but the CLI's is not. Without the
+    // rewrite the CLI fails with `from System unsupported` (return -5),
+    // surfaced as the same "The input preset file is invalid and can not
+    // be parsed." rejection as the missing-type case.
+    const profile: ProfileJson = { name: "x", from: "System" };
+    normalizeFromField(profile);
+    expect(profile.from).toBe("system");
+  });
+
+  it("leaves 'system' alone", () => {
+    const profile: ProfileJson = { name: "x", from: "system" };
+    normalizeFromField(profile);
+    expect(profile.from).toBe("system");
+  });
+
+  it("leaves 'Default' and other distinct tiers untouched", () => {
+    // "Default" is a separate tier the CLI handles — rewriting it would
+    // mask a real mis-tagged file.
+    const profile: ProfileJson = { name: "x", from: "Default" };
+    normalizeFromField(profile);
+    expect(profile.from).toBe("Default");
+  });
+
+  it("leaves a missing from field undefined", () => {
+    const profile: ProfileJson = { name: "x" };
+    normalizeFromField(profile);
+    expect(profile.from).toBeUndefined();
+  });
+
+  it("mutates in place and returns the same reference", () => {
+    const profile: ProfileJson = { from: "User" };
+    const result = normalizeFromField(profile);
     expect(result).toBe(profile);
   });
 });

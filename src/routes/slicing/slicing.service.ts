@@ -13,6 +13,7 @@ import { Open } from "unzipper";
 import {
   ensureProfileType,
   getDefaultBundledProfilesPath,
+  normalizeFromField,
   resolveProfile,
   type ProfileCategory,
   type ProfileJson,
@@ -647,6 +648,7 @@ async function materializeProfile(
   }
 
   ensureProfileType(profile, args.category);
+  normalizeFromField(profile);
 
   const outPath = path.join(args.inputDir, args.filename);
   try {
