@@ -129,6 +129,24 @@ function stripUserSentinels(profile: ProfileJson): void {
   }
 }
 
+// BambuStudio's "Export Preset Bundle" omits `type:` on System-tier presets
+// (the GUI infers it from the directory the file lives in) and emits
+// `inherits: ""` for them, so resolveProfile's inherits walk never runs and
+// can't pick up `type` from a parent. The CLI's --load-settings/--load-filaments
+// parser then sees a type-less file, logs `operator(): unknown config type
+// ... in load-settings`, writes `error_string: "The input preset file is
+// invalid and can not be parsed.", return_code: -5` to result.json, and
+// exits 0. Stamp the category we already know.
+export function ensureProfileType(
+  profile: ProfileJson,
+  category: ProfileCategory,
+): ProfileJson {
+  if (typeof profile.type !== "string" || profile.type.length === 0) {
+    profile.type = category;
+  }
+  return profile;
+}
+
 export function mergeProfiles(
   parent: ProfileJson,
   child: ProfileJson,

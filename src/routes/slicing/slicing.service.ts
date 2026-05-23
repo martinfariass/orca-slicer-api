@@ -11,6 +11,7 @@ import type {
 } from "./models";
 import { Open } from "unzipper";
 import {
+  ensureProfileType,
   getDefaultBundledProfilesPath,
   resolveProfile,
   type ProfileCategory,
@@ -644,6 +645,8 @@ async function materializeProfile(
       bundledProfilesPath: args.bundledProfilesPath,
     });
   }
+
+  ensureProfileType(profile, args.category);
 
   const outPath = path.join(args.inputDir, args.filename);
   try {
