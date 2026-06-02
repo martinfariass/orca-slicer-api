@@ -29,9 +29,10 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         exit 1; \
     fi
 
-# BambuStudio is built against webkit2gtk-4.0 (Ubuntu 22.04 era); 24.04
-# only ships 4.1, so the runtime image stays on 22.04. This differs from
-# Dockerfile.test (OrcaSlicer) which is on 24.04 / webkit2gtk-4.1.
+# BambuStudio's "ubuntu-22.04" AppImage variant links against webkit2gtk-4.1
+# starting with v02.07.x (was 4.0 in 02.06.x); both 22.04 and 24.04 ship 4.1
+# in-archive, so we stay on 22.04 here. See Dockerfile.bambu-studio for the
+# full failure mode if the wrong webkit2gtk family is installed.
 RUN apt-get update \
 	&& apt-get upgrade -y \
 	&& apt-get install -y --no-install-recommends \
@@ -46,7 +47,7 @@ RUN apt-get update \
 	libsm6 libice6 libmspack0 libsoup2.4-1 \
 	libgtk-3-0 \
 	libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
-	libwebkit2gtk-4.0-37 \
+	libwebkit2gtk-4.1-0 \
 	&& update-ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
