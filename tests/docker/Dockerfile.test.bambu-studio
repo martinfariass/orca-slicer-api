@@ -9,15 +9,17 @@
 #
 # Build:
 #   docker build -f tests/docker/Dockerfile.test.bambu-studio \
-#                --build-arg BAMBU_VERSION=02.06.00.51 \
+#                --build-arg BAMBU_VERSION=02.07.01.57 \
 #                -t bambu-studio-api-test .
 #   docker run --rm bambu-studio-api-test
 #
 # AMD64 only — BambuStudio doesn't publish an official ARM64 AppImage.
+# Uses the Ubuntu 22.04 AppImage (Fedora was dropped upstream after
+# v02.06.x); see Dockerfile.bambu-studio for the asset-resolution rationale.
 
 FROM ubuntu:22.04
 
-ARG BAMBU_VERSION=02.06.00.51
+ARG BAMBU_VERSION=02.07.01.57
 ARG TARGETARCH
 
 WORKDIR /app
@@ -48,9 +50,16 @@ RUN apt-get update \
 	&& update-ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN echo "Downloading BambuStudio v${BAMBU_VERSION}..."; \
-	curl -fL -o bambu.AppImage \
-	"https://github.com/bambulab/BambuStudio/releases/download/v${BAMBU_VERSION}/Bambu_Studio_linux_fedora-v${BAMBU_VERSION}.AppImage"; \
+RUN echo "Resolving BambuStudio v${BAMBU_VERSION} Ubuntu 22.04 AppImage URL..."; \
+	BAMBU_URL=$(curl -fsSL "https://api.github.com/repos/bambulab/BambuStudio/releases/tags/v${BAMBU_VERSION}" \
+		| grep -oE 'https://[^"]*BambuStudio_ubuntu-?22\.04[^"]*\.AppImage' \
+		| head -1); \
+	if [ -z "$BAMBU_URL" ]; then \
+		echo "ERROR: No Ubuntu 22.04 AppImage in BambuStudio v${BAMBU_VERSION}." >&2; \
+		exit 1; \
+	fi; \
+	echo "Downloading $BAMBU_URL"; \
+	curl -fL -o bambu.AppImage "$BAMBU_URL"; \
 	chmod +x bambu.AppImage; \
 	./bambu.AppImage --appimage-extract; \
 	rm bambu.AppImage
