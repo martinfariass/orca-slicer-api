@@ -20,7 +20,10 @@
 #   4. This script NEVER calls: git checkout / pull / fetch / reset / push
 #
 # Image layout:
-#   Dockerfile               -> ghcr.io/maziggy/orca-slicer-api      (amd64 + arm64)
+#   Dockerfile               -> ghcr.io/maziggy/orca-slicer-api      (amd64 ONLY —
+#                                ARM64 AppImage extraction is unreliable under QEMU;
+#                                realistic platform for slicer sidecars is x86 NAS /
+#                                home-server anyway)
 #   Dockerfile.bambu-studio  -> ghcr.io/maziggy/bambu-studio-api     (amd64 ONLY —
 #                                BambuStudio has no upstream ARM64 AppImage)
 #
@@ -187,17 +190,19 @@ build_tags_for() {
 BUILD_ARGS="--provenance=false --sbom=false --no-cache --pull"
 
 # ----------------------------------------------------------------------
-# Build 1/2 — Orca (amd64 + arm64)
+# Build 1/2 — Orca (amd64 only — ARM64 AppImage extraction is unreliable
+# under QEMU; revisit once Dockerfile RUN block is fixed to chain with &&
+# and curl uses -fL so the underlying error becomes visible)
 # ----------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}================================================${NC}"
-echo -e "${GREEN}  Building orca-slicer-api (amd64 + arm64)${NC}"
+echo -e "${GREEN}  Building orca-slicer-api (amd64 only)${NC}"
 echo -e "${GREEN}================================================${NC}"
 
 ORCA_TAGS=$(build_tags_for "$ORCA_IMAGE_NAME")
 DOCKER_BUILDKIT=1 docker buildx build \
     -f Dockerfile \
-    --platform linux/amd64,linux/arm64 \
+    --platform linux/amd64 \
     ${BUILD_ARGS} \
     ${ORCA_TAGS} \
     --push \
