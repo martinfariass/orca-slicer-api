@@ -16,7 +16,12 @@ import {
   deleteBundle,
 } from "./bundle.service";
 import { AppError } from "../../middleware/error";
-import { getDefaultBundledProfilesPath } from "../slicing/profile-resolver";
+import {
+  getDefaultBundledProfilesPath,
+  resolveProfile,
+  type ProfileCategory,
+  type ProfileJson,
+} from "../slicing/profile-resolver";
 
 const router = Router();
 
@@ -178,6 +183,58 @@ router.get("/bundles/:id", async (req, res) => {
 router.delete("/bundles/:id", async (req, res) => {
   await deleteBundle(req.params.id);
   res.status(204).send();
+});
+
+const RESOLVER_CATEGORIES: ProfileCategory[] = ["machine", "process", "filament"];
+
+// Flatten a profile's `inherits:` chain and return the effective values.
+//
+// Registered before the "/:category" routes below, or Express matches
+// "resolve" as a category name.
+//
+// This is the same resolver `/slice` runs, against the same bundled profiles,
+// which is the whole point: a caller that wants to show a user what a preset
+// actually sets must not re-implement the walk against a different profile
+// tree and quietly disagree with what gets sliced.
+//
+// The body carries the profile rather than a name so all three shapes work
+// through one path: a `{inherits: "<system preset>"}` stub, a user's delta
+// with an inherits chain, and an already-flat profile (returned unchanged).
+router.post("/resolve", async (req, res) => {
+  const category = req.body?.category;
+  const profile = req.body?.profile;
+
+  // Not `validateCategory`: that guards the *storage* names
+  // (printers / presets / filaments) used by the CRUD routes below. The
+  // resolver keys off the bundled-profile directory names instead.
+  if (!RESOLVER_CATEGORIES.includes(category)) {
+    throw new AppError(
+      400,
+      "Invalid or missing category",
+      `Expected one of ${RESOLVER_CATEGORIES.join(", ")}`,
+    );
+  }
+
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    throw new AppError(400, "A `profile` object is required");
+  }
+
+  const bundledProfilesPath = getDefaultBundledProfilesPath();
+  if (!bundledProfilesPath) {
+    throw new AppError(
+      500,
+      "Bundled profiles path is not configured",
+      "Set BUNDLED_PROFILES_PATH or ORCASLICER_PATH so the resolver can locate resources/profiles.",
+    );
+  }
+
+  const resolved = await resolveProfile(
+    profile as ProfileJson,
+    category as ProfileCategory,
+    { bundledProfilesPath },
+  );
+
+  res.status(200).json({ profile: resolved });
 });
 
 router.post("/:category", uploadJson.single("file"), async (req, res) => {
