@@ -50,7 +50,7 @@ If you want to build the image locally instead use:
 ```bash
 git clone https://github.com/AFKFelix/orca-slicer-api.git
 cd orca-slicer-api
-docker build --build-arg ORCA_VERSION=2.3.0 -t orca-slicer-api .
+docker build --build-arg ORCA_VERSION=2.4.2 -t orca-slicer-api .
 docker run -d -p 3000:3000 --name orca-slicer-api orca-slicer-api
 ```
 
@@ -82,17 +82,18 @@ curl http://localhost:3001/health
 `Dockerfile.bambu-studio` reuses the same Node wrapper as the OrcaSlicer
 image — BambuStudio's CLI accepts the same `--load-settings` / `--slice`
 flags, so only the bundled AppImage and a few env vars differ. Pin the
-BambuStudio version with `BAMBU_VERSION=02.07.01.57 docker compose ...`
+BambuStudio version with `BAMBU_VERSION=02.07.01.62 docker compose ...`
 (Ubuntu 22.04 AppImage variant — Fedora was dropped upstream after v02.06.x).
 
-> **Slicing Bambu-authored 3MFs in mid-2026?** OrcaSlicer 2.3.2 / 2.4.0-dev
-> have known CLI bugs that block slicing many Bambu-authored 3MFs — see
+> **Slicing Bambu-authored 3MFs?** OrcaSlicer still has known CLI bugs
+> that block slicing many Bambu-authored 3MFs, 2.4.2 included — see
 > upstream [OrcaSlicer#12426](https://github.com/SoftFever/OrcaSlicer/issues/12426)
 > (segfault on painted multi-extruder files) and
 > [OrcaSlicer#13386](https://github.com/SoftFever/OrcaSlicer/issues/13386)
-> (parameter-range strict-validation reject). Bambu Studio is recommended
-> until the upstream fixes land — the `bambu-studio-api` service above is
-> a drop-in replacement with the same API surface.
+> (parameter-range strict-validation reject). #12426 is still open and its
+> fix PR (#13774) was closed without merging, so a newer OrcaSlicer does not
+> resolve it. Bambu Studio is recommended — the `bambu-studio-api` service
+> above is a drop-in replacement with the same API surface.
 
 ### Local (Development)
 

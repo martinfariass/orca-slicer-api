@@ -9,11 +9,11 @@ on:
       orca_version:
         description: "OrcaSlicer version to test (orcaslicer matrix slot)"
         required: false
-        default: "2.3.0"
+        default: "2.4.2"
       bambu_version:
         description: "BambuStudio version to test (bambu-studio matrix slot)"
         required: false
-        default: "02.07.01.57"
+        default: "02.07.01.62"
 
 jobs:
   test:

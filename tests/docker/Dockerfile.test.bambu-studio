@@ -9,7 +9,7 @@
 #
 # Build:
 #   docker build -f tests/docker/Dockerfile.test.bambu-studio \
-#                --build-arg BAMBU_VERSION=02.07.01.57 \
+#                --build-arg BAMBU_VERSION=02.07.01.62 \
 #                -t bambu-studio-api-test .
 #   docker run --rm bambu-studio-api-test
 #
@@ -19,7 +19,7 @@
 
 FROM ubuntu:22.04
 
-ARG BAMBU_VERSION=02.07.01.57
+ARG BAMBU_VERSION=02.07.01.62
 ARG TARGETARCH
 
 WORKDIR /app
