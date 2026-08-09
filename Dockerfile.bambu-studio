@@ -6,7 +6,7 @@
 # accepts identically). Only the bundled AppImage differs.
 #
 # Build:
-#   docker build -f Dockerfile.bambu-studio --build-arg BAMBU_VERSION=02.07.01.57 \
+#   docker build -f Dockerfile.bambu-studio --build-arg BAMBU_VERSION=02.07.01.62 \
 #                -t ghcr.io/maziggy/bambu-studio-api:latest .
 #
 # AMD64 only — BambuStudio doesn't publish an official ARM64 AppImage.
@@ -18,14 +18,14 @@
 # webkit2gtk-4.0, the API BambuStudio links against; 24.04 only has 4.1.
 #
 # The Ubuntu AppImage filename embeds an opaque build timestamp
-# (e.g. `BambuStudio_ubuntu-22.04-v02.07.01.57-20260601192128.AppImage`)
+# (e.g. `BambuStudio_ubuntu22.04-v02.07.01.62-20260616195227.AppImage`)
 # that can't be derived from BAMBU_VERSION alone, so we resolve the asset
 # URL at build time via the GitHub releases API. One unauthenticated call
 # per build; the public rate limit (60/hr per IP) is fine in practice.
 
 FROM node:22-bookworm AS build
 
-ARG BAMBU_VERSION=02.07.01.57
+ARG BAMBU_VERSION=02.07.01.62
 ARG TARGETARCH
 
 WORKDIR /app

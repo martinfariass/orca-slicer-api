@@ -26,17 +26,18 @@ services:
     # ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1 cannot slice real
     # OrcaSlicer GUI exports without these fixes.
     #
-    # Note (mid-2026): OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs
-    # that block slicing many Bambu-authored 3MFs — see upstream
-    # SoftFever/OrcaSlicer#12426 (segfault on painted multi-extruder
-    # files) and #13386 (parameter-range strict-validation reject).
-    # Bambu Studio is recommended (the bambu-studio-api service below
-    # is a drop-in replacement) until the upstream fixes land.
+    # Note (still true at OrcaSlicer 2.4.2): known CLI bugs block slicing
+    # many Bambu-authored 3MFs — see upstream SoftFever/OrcaSlicer#12426
+    # (segfault on painted multi-extruder files) and #13386
+    # (parameter-range strict-validation reject). #12426 is still open and
+    # the fix PR (#13774) was closed without merging, so moving off 2.3.2
+    # does not resolve it. Bambu Studio is recommended (the
+    # bambu-studio-api service below is a drop-in replacement).
     build:
       context: .
       args:
-        ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
-    image: orca-slicer-api:resolver-orca${ORCA_VERSION:-2.3.2}
+        ORCA_VERSION: "${ORCA_VERSION:-2.4.2}"
+    image: orca-slicer-api:resolver-orca${ORCA_VERSION:-2.4.2}
     container_name: orca-slicer-api
     restart: unless-stopped
     ports:
@@ -67,8 +68,8 @@ services:
       context: .
       dockerfile: Dockerfile.bambu-studio
       args:
-        BAMBU_VERSION: "${BAMBU_VERSION:-02.07.01.57}"
-    image: bambu-studio-api:bambu${BAMBU_VERSION:-02.07.01.57}
+        BAMBU_VERSION: "${BAMBU_VERSION:-02.07.01.62}"
+    image: bambu-studio-api:bambu${BAMBU_VERSION:-02.07.01.62}
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:
