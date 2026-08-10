@@ -57,6 +57,12 @@ if (process.env.NODE_ENV !== "production") {
     });
 }
 
-app.listen(port, () => {
-  console.log(`App listening on port ${port}`);
-});
+// Importing this module must not bind a port under test. The e2e setup calls
+// `configureApp()` and does its own `listen(0)`, and the unit tests re-import
+// through `vi.resetModules()` -- so the module-level listen raced its own
+// earlier instances for port 3000 and printed "App listening" once per import.
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, () => {
+    console.log(`App listening on port ${port}`);
+  });
+}

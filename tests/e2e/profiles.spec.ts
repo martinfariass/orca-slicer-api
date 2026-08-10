@@ -1,7 +1,22 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { request } from "./setup";
 import fs from "fs";
 import path from "path";
+
+/**
+ * Write a profile file straight to DATA_PATH, bypassing the upload route.
+ *
+ * POST /profiles/:category validates the JSON, so an unparseable profile
+ * cannot be created through the API -- but one can certainly exist on disk
+ * (a half-written file, a hand-edited DATA_PATH), and that case has to read
+ * differently from a profile that simply isn't there.
+ */
+function saveRaw(category: string, name: string, contents: string): void {
+  const base = process.env.DATA_PATH || path.join(process.cwd(), "data");
+  const dir = path.join(base, category);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${name}.json`), contents, "utf8");
+}
 
 describe("Profiles API", () => {
   const printerPath = path.join(__dirname, "../files/input/printer.json");
@@ -157,14 +172,30 @@ describe("Profiles API", () => {
         });
     });
 
-    it("should return error for non-existent printer profile", async () => {
-      await request.get("/profiles/printers/nonexistent").expect(500);
+    // 404, not 500. A profile that isn't there is the caller naming one that
+    // doesn't exist; a 500 said the service had broken, and made a typo'd
+    // preset name indistinguishable from an unreadable DATA_PATH.
+    it.each(["printers", "presets", "filaments"])(
+      "returns 404 for a non-existent %s profile",
+      async (category) => {
+        const res = await request
+          .get(`/profiles/${category}/nonexistent`)
+          .expect(404);
+        expect(res.body.message).toContain("nonexistent");
+      },
+    );
+
+    it("still reports an unreadable profile as a server error", async () => {
+      // The other half of the split: the file exists but cannot be used, which
+      // is a real fault and must not be dressed up as "not found".
+      saveRaw("printers", "corrupt", "{ this is not json");
+
+      const res = await request.get("/profiles/printers/corrupt").expect(500);
+      expect(res.body.message).toMatch(/not valid JSON/i);
     });
-    it("should return error for non-existent preset profile", async () => {
-      await request.get("/profiles/presets/nonexistent").expect(500);
-    });
-    it("should return error for non-existent filament profile", async () => {
-      await request.get("/profiles/filaments/nonexistent").expect(500);
+
+    it("deleting a profile that was never there is a 404", async () => {
+      await request.delete("/profiles/printers/nonexistent").expect(404);
     });
   });
 });

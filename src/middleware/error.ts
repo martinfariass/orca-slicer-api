@@ -59,6 +59,23 @@ function fromMulterError(err: MulterError): AppError {
   }
 }
 
+/**
+ * Should a handled error be written to the console?
+ *
+ * Not under test. The suites assert dozens of 4xx and a handful of 5xx on
+ * purpose, and logging each one turned a green run into a wall of red text
+ * that read like failures. Nothing is lost: every one of those tests asserts
+ * on the response, and when one *does* fail supertest prints the body --
+ * which carries the same `message` and `details` the log line would have.
+ *
+ * `LOG_ERRORS=1` forces them back on for when you are debugging a suite and
+ * want the server's side of the story inline.
+ */
+function shouldLogErrors(): boolean {
+  if (process.env.LOG_ERRORS === "1") return true;
+  return process.env.NODE_ENV !== "test";
+}
+
 /* eslint-disable @typescript-eslint/no-unused-vars */
 export function errorHandler(
   rawErr: AppError | MulterError,
@@ -69,16 +86,35 @@ export function errorHandler(
   const err =
     rawErr instanceof MulterError ? fromMulterError(rawErr) : (rawErr as AppError);
 
-  // Log the original error's stack: for a translated MulterError the
-  // AppError above was constructed here, so its stack points at this file
-  // rather than at the upload that failed.
-  console.error(
-    `[${new Date().toISOString()}] Error: ${err.message}
-    at ${req.method} ${req.originalUrl} with ${rawErr.stack ?? "no stack trace"}
-    ${err.causeMessage ? `Cause: ${err.causeMessage}` : ""}`
-  );
-
   const status = typeof err.status === "number" ? err.status : 500;
+
+  // Log volume in proportion to what the error means. A 4xx is the service
+  // working -- a caller sent something wrong and was told so -- and a stack
+  // trace for one says nothing the message doesn't, while burying the 5xx
+  // that matter. The test suite asserts dozens of 4xx deliberately, so a
+  // twenty-line trace each turned a green run into a wall of red text.
+  const where = `${req.method} ${req.originalUrl}`;
+  const cause = err.causeMessage ? ` Cause: ${err.causeMessage}` : "";
+
+  if (shouldLogErrors()) {
+    if (status >= 500) {
+      // The original error's stack, not `err`'s: for a translated MulterError
+      // the AppError above was constructed here, so its stack would point at
+      // this file rather than at the upload that failed.
+      console.error(
+        `[${new Date().toISOString()}] Error: ${err.message}
+    at ${where} with ${rawErr.stack ?? "no stack trace"}
+   ${cause}`
+      );
+    } else {
+      // A 4xx is the service working: a caller sent something wrong and was
+      // told so. One line, no stack -- the trace says nothing the message
+      // doesn't and buries the 5xx that matter.
+      console.warn(
+        `[${new Date().toISOString()}] ${status} ${where} -- ${err.message}`
+      );
+    }
+  }
 
   // Include `causeMessage` (the underlying CLI stderr / wrapped error) as
   // `details` in the response. Bambuddy reads this field to surface the

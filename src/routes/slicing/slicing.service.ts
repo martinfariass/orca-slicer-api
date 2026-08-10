@@ -527,80 +527,76 @@ async function bundlePathOrUndefined(
   return await resolveBundlePresetPath(bundleId, category, presetName);
 }
 
+/**
+ * Pull print time and filament usage out of a G-code header.
+ *
+ * The two slicers write the same facts in different words, and only
+ * OrcaSlicer's spelling was ever handled:
+ *
+ *   OrcaSlicer     ; filament used [mm] = 237.97
+ *                  ; filament used [g] = 0.72
+ *   BambuStudio    ; total filament length [mm] : 240.69
+ *                  ; total filament weight [g] : 0.72
+ *
+ * So every slice through the BambuStudio image reported
+ * `X-Filament-Used-G: 0` and `X-Filament-Used-Mm: 0`. Print time survived by
+ * luck -- BambuStudio happens to write "total estimated time:", which the
+ * first pattern already matched -- which is why the gap went unnoticed:
+ * the response looked populated.
+ *
+ * Patterns are tried in order and the first that matches wins. Anchoring on
+ * the full label matters: the CONFIG_BLOCK further down the same file is full
+ * of `filament_*` keys that a looser pattern would happily match.
+ */
+const PRINT_TIME_PATTERNS = [
+  // BambuStudio, and OrcaSlicer's "; model printing time: ...; total estimated time: ..."
+  /total estimated time:\s*((?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?)/i,
+  // PrusaSlicer-descended spelling, still emitted by some OrcaSlicer builds
+  /; estimated printing time \(normal mode\) =\s*((?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?)/i,
+];
+
+const FILAMENT_MM_PATTERNS = [
+  /; filament used \[mm\] =\s*(\d+(?:\.\d+)?)/,
+  /; total filament length \[mm\]\s*:\s*(\d+(?:\.\d+)?)/,
+];
+
+const FILAMENT_G_PATTERNS = [
+  /; filament used \[g\] =\s*(\d+(?:\.\d+)?)/,
+  /; total filament weight \[g\]\s*:\s*(\d+(?:\.\d+)?)/,
+];
+
+function firstNumber(content: string, patterns: RegExp[]): number {
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (match) return parseFloat(match[1]);
+  }
+  return 0;
+}
+
+function parseDuration(content: string, patterns: RegExp[]): number {
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (!match) continue;
+    const days = parseInt(match[2] || "0");
+    const hours = parseInt(match[3] || "0");
+    const minutes = parseInt(match[4] || "0");
+    const seconds = parseInt(match[5] || "0");
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+  }
+  return 0;
+}
+
 function parseMetaDataFromString(content: string): SliceMetaData {
-  const data: SliceMetaData = {
-    printTime: 0,
-    filamentUsedG: 0,
-    filamentUsedMm: 0,
-  };
-
   try {
-    // Extract print time
-    const timeIndex = content.indexOf("total estimated time");
-    if (timeIndex !== -1) {
-      const timeSlice = content.slice(timeIndex, timeIndex + 80);
-      const timeMatch = timeSlice.match(
-        /total estimated time:\s*((?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?)/i,
-      );
-      if (timeMatch) {
-        const days = parseInt(timeMatch[2] || "0");
-        const hours = parseInt(timeMatch[3] || "0");
-        const minutes = parseInt(timeMatch[4] || "0");
-        const seconds = parseInt(timeMatch[5] || "0");
-        data.printTime = days * 86400 + hours * 3600 + minutes * 60 + seconds;
-      }
-    }
-
-    if (timeIndex === -1) {
-      const altTimeIndex = content.indexOf(
-        "; estimated printing time (normal mode)",
-      );
-      if (altTimeIndex !== -1) {
-        const timeSlice = content.slice(altTimeIndex, altTimeIndex + 100);
-        const timeMatch = timeSlice.match(
-          /; estimated printing time \(normal mode\) = \s*((?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?)/i,
-        );
-        if (timeMatch) {
-          const days = parseInt(timeMatch[2] || "0");
-          const hours = parseInt(timeMatch[3] || "0");
-          const minutes = parseInt(timeMatch[4] || "0");
-          const seconds = parseInt(timeMatch[5] || "0");
-          data.printTime = days * 86400 + hours * 3600 + minutes * 60 + seconds;
-        }
-      }
-    }
-
-    // Extract filament used [mm]
-    const filamentMmIndex = content.indexOf("; filament used [mm]");
-    if (filamentMmIndex !== -1) {
-      const filamentMmSlice = content.slice(
-        filamentMmIndex,
-        filamentMmIndex + 50,
-      );
-      const mmMatch = filamentMmSlice.match(
-        /; filament used \[mm\] = \s*(\d+(\.\d+)?)/,
-      );
-      if (mmMatch) {
-        data.filamentUsedMm = parseFloat(mmMatch[1]);
-      }
-    }
-
-    // Extract filament used [g]
-    const filamentGIndex = content.indexOf("; filament used [g]");
-    if (filamentGIndex !== -1) {
-      const filamentGSlice = content.slice(filamentGIndex, filamentGIndex + 50);
-      const gMatch = filamentGSlice.match(
-        /; filament used \[g\] = \s*(\d+(\.\d+)?)/,
-      );
-      if (gMatch) {
-        data.filamentUsedG = parseFloat(gMatch[1]);
-      }
-    }
+    return {
+      printTime: parseDuration(content, PRINT_TIME_PATTERNS),
+      filamentUsedG: firstNumber(content, FILAMENT_G_PATTERNS),
+      filamentUsedMm: firstNumber(content, FILAMENT_MM_PATTERNS),
+    };
   } catch (err) {
     console.error("Failed to parse metadata from string:", err);
+    return { printTime: 0, filamentUsedG: 0, filamentUsedMm: 0 };
   }
-
-  return data;
 }
 
 interface MaterializeProfileArgs {

@@ -2,5 +2,6 @@
   "type": "process",
   "name": "0.20mm Standard @BBL X1C",
   "inherits": "0.20mm Standard @BBL X1C",
-  "from": "User"
+  "from": "User",
+  "curr_bed_type": "Textured PEI Plate"
 }

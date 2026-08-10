@@ -78,6 +78,9 @@ ENV PORT=3000
 ENV ORCASLICER_PATH=/app/squashfs-root/AppRun
 ENV BUNDLED_PROFILES_PATH=/app/squashfs-root/resources/profiles/BBL
 ENV NODE_ENV=test
+# Which slicer this image wraps. The wrapper itself is slicer-agnostic;
+# tests use this to skip coverage that only applies to one of them.
+ENV SLICER_FLAVOR=bambu
 ENV DATA_PATH=/tmp/data
 ENV OUTPUT_PATH=/tmp/output
 

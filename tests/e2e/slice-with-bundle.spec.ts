@@ -13,7 +13,18 @@ import os from "os";
 //
 // This is the regression test for Step 0 TEST 7 (the empirical proof that
 // .bbscfg deltas slice cleanly when fed through the resolver).
-describe("Slicing - bundle selector path", () => {
+//
+// BambuStudio only. The one bundle fixture we have is an H2D export, and the
+// H2D is a dual-nozzle BambuStudio printer: OrcaSlicer 2.4.2 loads the same
+// bundle and then fails with "Found G-code in unprintable area of
+// multi-extruder printers" (exit 154). The assertions below expect
+// "BambuStudio" in the output, so the intent was always this image -- the
+// suite simply had no way to say so and failed on the Orca image instead.
+// Gate rather than delete: the path is real and worth covering where it runs.
+const SLICER_FLAVOR = process.env.SLICER_FLAVOR ?? "bambu";
+const bundleSuite = SLICER_FLAVOR === "orca" ? describe.skip : describe;
+
+bundleSuite("Slicing - bundle selector path", () => {
   let originalDataPath: string | undefined;
   let scratchRoot: string;
 
@@ -62,6 +73,11 @@ describe("Slicing - bundle selector path", () => {
 
     const response = await request
       .post("/slice")
+      // The slice comes back as application/octet-stream, so without this
+      // supertest leaves `response.text` undefined and the body assertions
+      // below throw instead of asserting. Every other slicing spec that
+      // inspects a body sets it.
+      .responseType("blob")
       .field("bundle", bundleId)
       .field("printerName", "# Bambu Lab H2D 0.4 nozzle")
       .field("processName", "# 0.20mm Standard @BBL H2D")
@@ -75,9 +91,11 @@ describe("Slicing - bundle selector path", () => {
     expect(Number(response.headers["x-print-time-seconds"])).toBeGreaterThan(0);
     expect(Number(response.headers["x-filament-used-g"])).toBeGreaterThan(0);
     expect(Number(response.headers["x-filament-used-mm"])).toBeGreaterThan(0);
+
     // BambuStudio CLI emits G-code with this header line at the top.
-    expect(response.text).toMatch(/^; HEADER_BLOCK_START/);
-    expect(response.text).toContain("BambuStudio");
+    const gcode = response.body.toString("utf-8");
+    expect(gcode).toMatch(/^; HEADER_BLOCK_START/);
+    expect(gcode).toContain("BambuStudio");
   }, 120_000);
 
   it("slices when preset names are passed without the '# ' user-clone prefix", async () => {
@@ -108,6 +126,30 @@ describe("Slicing - bundle selector path", () => {
       .expect(200);
   }, 120_000);
 
+});
+
+describe("Bundle CRUD endpoints and selector errors", () => {
+  let originalDataPath: string | undefined;
+  let scratchRoot: string;
+
+  beforeAll(async () => {
+    originalDataPath = process.env.DATA_PATH;
+    scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bundle-crud-e2e-"));
+    process.env.DATA_PATH = scratchRoot;
+  });
+
+  afterAll(async () => {
+    if (originalDataPath === undefined) {
+      delete process.env.DATA_PATH;
+    } else {
+      process.env.DATA_PATH = originalDataPath;
+    }
+    await fs.rm(scratchRoot, { recursive: true, force: true });
+  });
+
+  // These two POST /slice cases fail on bundle/preset lookup, before the
+  // slicer is ever spawned, so they are flavour-independent and stay out
+  // of the BambuStudio-only suite above.
   it("returns 404 when slicing references an unknown bundle id", async () => {
     const stlPath = path.join(__dirname, "../files/input/Cube.stl");
     const stlBuffer = fsSync.readFileSync(stlPath);
@@ -149,26 +191,6 @@ describe("Slicing - bundle selector path", () => {
     expect(res.body.message ?? res.body.error).toMatch(
       /process preset "Imaginary Process" not found/i,
     );
-  });
-});
-
-describe("Bundle CRUD endpoints", () => {
-  let originalDataPath: string | undefined;
-  let scratchRoot: string;
-
-  beforeAll(async () => {
-    originalDataPath = process.env.DATA_PATH;
-    scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bundle-crud-e2e-"));
-    process.env.DATA_PATH = scratchRoot;
-  });
-
-  afterAll(async () => {
-    if (originalDataPath === undefined) {
-      delete process.env.DATA_PATH;
-    } else {
-      process.env.DATA_PATH = originalDataPath;
-    }
-    await fs.rm(scratchRoot, { recursive: true, force: true });
   });
 
   it("supports POST → GET (single + list) → DELETE roundtrip", async () => {

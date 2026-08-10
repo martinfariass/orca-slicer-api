@@ -4,6 +4,7 @@
   "name": "0.20mm Standard @Anycubic i3MegaS",
   "from": "system",
   "inherits": "fdm_process_common",
+  "curr_bed_type": "Textured PEI Plate",
   "compatible_printers": ["Anycubic i3 Mega S 0.4 nozzle"],
   "instantiation": "true",
   "adaptive_layer_height": "1",

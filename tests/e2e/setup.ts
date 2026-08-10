@@ -8,7 +8,9 @@ import { loadEnvFile } from "process";
 try {
   loadEnvFile();
 } catch {
-  console.warn("No .env file found, proceeding without.");
+  // Expected everywhere the config comes from the environment instead of a
+  // file -- CI, Docker, `./test_e2e.sh`. It was warning once per test file,
+  // which is a dozen lines of nothing on every green run.
 }
 
 const app = configureApp();

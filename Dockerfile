@@ -59,6 +59,9 @@ ENV PORT=3000
 ENV ORCASLICER_PATH=/app/squashfs-root/AppRun
 ENV DATA_PATH=/app/data
 ENV NODE_ENV=production
+# Which slicer this image wraps. The wrapper itself is slicer-agnostic;
+# tests use this to skip coverage that only applies to one of them.
+ENV SLICER_FLAVOR=orca
 
 EXPOSE 3000
 

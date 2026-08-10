@@ -18,6 +18,17 @@ export interface HealthCheck {
   };
 }
 
+/** The child-process exit code `execFileSync` hangs off the error it throws. */
+function exitStatusOf(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function checkHealth(): Promise<HealthCheck> {
   const timestamp = new Date().toISOString();
   const checks: HealthCheck["checks"] = {
@@ -45,15 +56,18 @@ export async function checkHealth(): Promise<HealthCheck> {
       
       checks.orcaslicer.available = true;
       checks.orcaslicer.version = version;
-    } catch (versionError: any) {
-      if (versionError.status !== undefined && versionError.status !== 0) {
-        checks.orcaslicer.available = false;
-        checks.orcaslicer.error = `OrcaSlicer exited with code ${versionError.status}: ${versionError.message}`;
-      } else {
-        checks.orcaslicer.available = false;
-        checks.orcaslicer.error =
-          versionError instanceof Error ? versionError.message : String(versionError);
-      }
+    } catch (versionError) {
+      // `execFileSync` throws an Error decorated with the child's exit
+      // `status`. That property is not on the Error type, so read it through
+      // a narrow guard rather than widening the whole binding to `any` —
+      // a non-zero exit and a failure to spawn at all are different things
+      // and the message should say which happened.
+      const exitStatus = exitStatusOf(versionError);
+      checks.orcaslicer.available = false;
+      checks.orcaslicer.error =
+        exitStatus !== undefined && exitStatus !== 0
+          ? `OrcaSlicer exited with code ${exitStatus}: ${messageOf(versionError)}`
+          : messageOf(versionError);
     }
   } catch (error) {
     checks.orcaslicer.available = false;

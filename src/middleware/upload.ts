@@ -108,13 +108,35 @@ const modelStorage: multer.StorageEngine = {
   },
 };
 
-const allowedModelMimeTypes = [
-  "model/stl",
-  "application/step",
-  "model/step",
-  "model/3mf",
-];
-const allowedModelExts = [".stl", ".step", ".stp", ".3mf"];
+const allowedModelMimeTypes = ["model/stl", "model/3mf"];
+const allowedModelExts = [".stl", ".3mf"];
+
+/**
+ * Formats accepted at the HTTP boundary that the slicer cannot actually load.
+ *
+ * Both CLIs answer a STEP file with `Unknown file format. Input file must have
+ * .stl, .obj, .amf(.xml) extension.` and exit 250 — verified against
+ * OrcaSlicer 2.4.2 and BambuStudio 02.07.01.62. Accepting the upload and
+ * letting the slicer fail turns an unsupported format into what reads like a
+ * corrupt model, several seconds later. Reject it here, and say why.
+ */
+const unsupportedModelExts = [".step", ".stp"];
+
+function rejectIfUnsupportedFormat(
+  ext: string,
+  cb: multer.FileFilterCallback
+): boolean {
+  if (!unsupportedModelExts.includes(ext)) return false;
+  cb(
+    new AppError(
+      400,
+      "STEP files cannot be sliced. The OrcaSlicer and BambuStudio command-line " +
+        "slicers load only STL, OBJ, AMF and 3MF -- open the STEP in the slicer's " +
+        "GUI and export it as one of those first."
+    )
+  );
+  return true;
+}
 
 export const uploadJson = multer({
   storage,
@@ -167,6 +189,8 @@ export const uploadModel = multer({
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
 
+    if (rejectIfUnsupportedFormat(ext, cb)) return;
+
     if (
       !allowedModelMimeTypes.includes(file.mimetype) ||
       !allowedModelExts.includes(ext)
@@ -174,7 +198,7 @@ export const uploadModel = multer({
       return cb(
         new AppError(
           400,
-          "Invalid file type. Only STL, STEP, and 3MF files are allowed."
+          "Invalid file type. Only STL and 3MF files are allowed."
         )
       );
     }
@@ -195,6 +219,8 @@ export const uploadFullPrint = multer({
     const ext = path.extname(file.originalname).toLowerCase();
 
     if (file.fieldname === MODEL_FIELD) {
+      if (rejectIfUnsupportedFormat(ext, cb)) return;
+
       if (
         !allowedModelMimeTypes.includes(file.mimetype) ||
         !allowedModelExts.includes(ext)
@@ -202,7 +228,7 @@ export const uploadFullPrint = multer({
         return cb(
           new AppError(
             400,
-            "Invalid file type. Only STL, STEP, and 3MF files are allowed."
+            "Invalid file type. Only STL and 3MF files are allowed."
           )
         );
       }

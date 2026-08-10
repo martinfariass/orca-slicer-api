@@ -164,8 +164,15 @@ describe("POST /profiles/resolve", () => {
   });
 
   it("explains itself when no bundled profile tree is configured", async () => {
-    const saved = process.env.BUNDLED_PROFILES_PATH;
+    // Both vars have to go. `getDefaultBundledProfilesPath` falls back to
+    // deriving the tree from ORCASLICER_PATH, so clearing only
+    // BUNDLED_PROFILES_PATH left the resolver working on any machine that
+    // actually has a slicer -- the test passed on a bare dev box and failed
+    // in the very images it is meant to cover.
+    const savedBundled = process.env.BUNDLED_PROFILES_PATH;
+    const savedSlicer = process.env.ORCASLICER_PATH;
     delete process.env.BUNDLED_PROFILES_PATH;
+    delete process.env.ORCASLICER_PATH;
     try {
       const res = await request
         .post("/profiles/resolve")
@@ -175,7 +182,10 @@ describe("POST /profiles/resolve", () => {
       // operator hits on a misconfigured image, and "500" alone is useless.
       expect(res.body.details).toMatch(/BUNDLED_PROFILES_PATH|ORCASLICER_PATH/);
     } finally {
-      process.env.BUNDLED_PROFILES_PATH = saved;
+      if (savedBundled === undefined) delete process.env.BUNDLED_PROFILES_PATH;
+      else process.env.BUNDLED_PROFILES_PATH = savedBundled;
+      if (savedSlicer === undefined) delete process.env.ORCASLICER_PATH;
+      else process.env.ORCASLICER_PATH = savedSlicer;
     }
   });
 

@@ -24,9 +24,14 @@ function envMegabytes(name: string, fallbackMb: number): number {
   }
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.warn(
-      `[upload] Ignoring ${name}="${raw}": expected a positive number of megabytes. Using ${fallbackMb} MB.`
-    );
+    // Silent under test, where a suite feeds it garbage on purpose to prove
+    // the fallback holds. Everywhere else an operator needs to know their
+    // setting was ignored.
+    if (process.env.NODE_ENV !== "test" || process.env.LOG_ERRORS === "1") {
+      console.warn(
+        `[upload] Ignoring ${name}="${raw}": expected a positive number of megabytes. Using ${fallbackMb} MB.`
+      );
+    }
     return fallbackMb * 1024 * 1024;
   }
   return Math.floor(parsed * 1024 * 1024);
