@@ -21,12 +21,58 @@ import {
 import { progressStore, parseProgressLine } from "./progress-store";
 import { resolveBundlePresetPath } from "../profiles/bundle.service";
 
+/**
+ * Where the model to slice comes from.
+ *
+ * `/slice` streams the upload to a temp file rather than buffering it (see
+ * `modelStorage` in middleware/upload.ts), so the common shape is a path.
+ * The Buffer form stays for callers that already hold the bytes.
+ */
+export type ModelSource = Buffer | { path: string };
+
+/**
+ * Put the model at `inPath` inside the slice workdir.
+ *
+ * Moving rather than copying means the upload's temp file is disposed of by
+ * the workdir cleanup every exit path already runs. `rename` fails with EXDEV
+ * when TMPDIR and the workdir sit on different filesystems, which is normal
+ * in containers with a tmpfs /tmp, so fall back to copy-then-unlink.
+ */
+async function placeModelFile(
+  file: ModelSource,
+  inPath: string,
+): Promise<void> {
+  if (Buffer.isBuffer(file)) {
+    await fs.writeFile(inPath, file);
+    return;
+  }
+  try {
+    await fs.rename(file.path, inPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await fs.copyFile(file.path, inPath);
+    await fs.rm(file.path, { force: true });
+  }
+}
+
 export async function sliceModel(
-  file: Buffer,
+  file: ModelSource,
   filename: string,
   settings: SlicingSettings,
   tempProfiles?: UploadedProfiles,
 ): Promise<SliceResult> {
+  // Checked before anything is created on disk. This used to sit just above
+  // the spawn, by which point the workdir existed and held a full copy of the
+  // model — and that throw is one of the few that doesn't clean up, so a
+  // misconfigured server leaked the whole model into TMPDIR on every attempt.
+  if (!process.env.ORCASLICER_PATH) {
+    throw new AppError(
+      500,
+      "Slicing is not configured properly on the server",
+      "ORCASLICER_PATH environment variable is not defined",
+    );
+  }
+
   let workdir: string;
   let inPath: string;
   let inputDir: string;
@@ -39,7 +85,7 @@ export async function sliceModel(
     await fs.mkdir(outputDir, { recursive: true });
 
     inPath = path.join(inputDir, filename);
-    await fs.writeFile(inPath, file);
+    await placeModelFile(file, inPath);
   } catch (error) {
     throw new AppError(
       500,
@@ -181,14 +227,6 @@ export async function sliceModel(
   args.push("--outputdir", outputDir);
 
   args.push(inPath);
-
-  if (!process.env.ORCASLICER_PATH) {
-    throw new AppError(
-      500,
-      "Slicing is not configured properly on the server",
-      "ORCASLICER_PATH environment variable is not defined",
-    );
-  }
 
   // Capture stdout + stderr so failure diagnostics survive the spawn-error
   // wrapper. The CLI prints the *reason* it rejected an input (range checks,

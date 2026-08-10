@@ -11,7 +11,11 @@ import type {
   UploadedProfiles,
 } from "./models";
 import { getMetaDataFromFile, sliceModel } from "./slicing.service";
-import { generateMetaDataHeaders } from "./helpers";
+import {
+  discardUpload,
+  generateMetaDataHeaders,
+  modelSourceFromUpload,
+} from "./helpers";
 
 type SliceJobStatus = "pending" | "processing" | "completed" | "failed";
 
@@ -203,7 +207,7 @@ async function processSliceJob(
 
   try {
     const { gcodes, workdir } = await sliceModel(
-      modelFile.buffer,
+      modelSourceFromUpload(modelFile),
       modelFile.originalname,
       settings,
       tempProfiles,
@@ -232,6 +236,11 @@ async function processSliceJob(
             ? error.message
             : "Failed to slice the model",
     });
+  } finally {
+    // No-op once sliceModel has moved the upload into its workdir; the
+    // safety net is for a failure before that point. This job runs detached
+    // from the request, so nothing else would ever clean it up.
+    await discardUpload(modelFile);
   }
 }
 

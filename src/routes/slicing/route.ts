@@ -11,7 +11,11 @@ import { progressStore } from "./progress-store";
 import fs from "fs/promises";
 import path from "path";
 import archiver from "archiver";
-import { generateMetaDataHeaders } from "./helpers";
+import {
+  discardUpload,
+  generateMetaDataHeaders,
+  modelSourceFromUpload,
+} from "./helpers";
 
 const router = Router();
 
@@ -64,16 +68,24 @@ router.post(
 
     const modelFile = files["file"][0];
 
-    const { gcodes, workdir } = await sliceModel(
-      modelFile.buffer,
-      modelFile.originalname,
-      req.body as SlicingSettings,
-      {
-        printer: files["printerProfile"]?.[0]?.buffer,
-        preset: files["presetProfile"]?.[0]?.buffer,
-        filaments: files["filamentProfile"]?.map((f) => f.buffer) ?? [],
-      } as UploadedProfiles,
-    );
+    let sliced;
+    try {
+      sliced = await sliceModel(
+        modelSourceFromUpload(modelFile),
+        modelFile.originalname,
+        req.body as SlicingSettings,
+        {
+          printer: files["printerProfile"]?.[0]?.buffer,
+          preset: files["presetProfile"]?.[0]?.buffer,
+          filaments: files["filamentProfile"]?.map((f) => f.buffer) ?? [],
+        } as UploadedProfiles,
+      );
+    } finally {
+      // No-op once sliceModel has moved the upload into its workdir; the
+      // safety net is for a failure before that point.
+      await discardUpload(modelFile);
+    }
+    const { gcodes, workdir } = sliced;
 
     if (gcodes.length === 1) {
       try {
