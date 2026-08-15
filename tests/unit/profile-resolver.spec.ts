@@ -431,3 +431,192 @@ describe("getDefaultBundledProfilesPath", () => {
     }
   });
 });
+
+// A bundled preset can keep a setting in a companion file named
+// `<preset> template <key>.json` that nothing in the preset references
+// (bambuddy#2838). Walking `inherits` alone therefore misses it and falls
+// through to whatever generic value the root template carries — for
+// `machine_start_gcode` on every Bambu machine, a 577-character stub with no
+// `M620` AMS load and no `M1002 gcode_claim_action`, which prints in air.
+describe("resolveProfile with companion templates", () => {
+  let bundledProfilesPath: string;
+
+  const GENERIC_START = "M104 S0 ; generic fallback from the root template";
+  const REAL_START = "M620 M ; enable remap\nM1002 gcode_claim_action : 1\n";
+
+  const write = async (name: string, body: Record<string, unknown>) =>
+    fs.writeFile(
+      path.join(bundledProfilesPath, "machine", `${name}.json`),
+      JSON.stringify(body),
+    );
+
+  beforeAll(async () => {
+    bundledProfilesPath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "test-companion-"),
+    );
+    await fs.mkdir(path.join(bundledProfilesPath, "machine"), {
+      recursive: true,
+    });
+
+    await write("fdm_machine_common", {
+      type: "machine",
+      name: "fdm_machine_common",
+      machine_start_gcode: GENERIC_START,
+      machine_end_gcode: "M104 S0 ; generic end",
+    });
+    await write("fdm_bbl_3dp_002_common", {
+      type: "machine",
+      name: "fdm_bbl_3dp_002_common",
+      inherits: "fdm_machine_common",
+      printer_technology: "FFF",
+    });
+
+    // The real layout: the 0.4 carries the companion, the 0.6 inherits it.
+    await write("Bambu Lab X2D 0.4 nozzle", {
+      type: "machine",
+      name: "Bambu Lab X2D 0.4 nozzle",
+      inherits: "fdm_bbl_3dp_002_common",
+      instantiation: "true",
+    });
+    await write("Bambu Lab X2D 0.4 nozzle template machine_start_gcode", {
+      name: "Bambu Lab X2D 0.4 nozzle template machine_start_gcode",
+      instantiation: "false",
+      machine_start_gcode: REAL_START,
+    });
+    await write("Bambu Lab X2D 0.6 nozzle", {
+      type: "machine",
+      name: "Bambu Lab X2D 0.6 nozzle",
+      inherits: "Bambu Lab X2D 0.4 nozzle",
+      instantiation: "true",
+    });
+
+    // A preset that sets the key inline *and* has a companion. No such case
+    // exists in the shipped bundle; this pins which way the tie breaks.
+    await write("Inline Wins 0.4 nozzle", {
+      type: "machine",
+      name: "Inline Wins 0.4 nozzle",
+      inherits: "fdm_machine_common",
+      machine_start_gcode: "M104 S0 ; set in the preset itself",
+    });
+    await write("Inline Wins 0.4 nozzle template machine_start_gcode", {
+      name: "Inline Wins 0.4 nozzle template machine_start_gcode",
+      machine_start_gcode: REAL_START,
+    });
+
+    await write("Broken 0.4 nozzle", {
+      type: "machine",
+      name: "Broken 0.4 nozzle",
+      inherits: "fdm_machine_common",
+    });
+    await fs.writeFile(
+      path.join(
+        bundledProfilesPath,
+        "machine",
+        "Broken 0.4 nozzle template machine_start_gcode.json",
+      ),
+      "{ not json",
+    );
+  });
+
+  afterAll(async () => {
+    await fs.rm(bundledProfilesPath, { recursive: true, force: true });
+  });
+
+  const resolve = (profile: ProfileJson) =>
+    resolveProfile(profile, "machine", { bundledProfilesPath });
+
+  it("takes the companion's value over the generic one from the root", async () => {
+    const result = await resolve({
+      type: "machine",
+      name: "Bambu Lab X2D 0.4 nozzle",
+      inherits: "Bambu Lab X2D 0.4 nozzle",
+      from: "system",
+    });
+
+    expect(result.machine_start_gcode).toBe(REAL_START);
+  });
+
+  it("reaches a companion owned by an ancestor, not just the named preset", async () => {
+    // The 0.2 / 0.6 / 0.8 variants have no companion of their own — 27 of the
+    // 56 shipped machine presets — and would still print in air if the lookup
+    // only considered the preset the caller asked for.
+    const result = await resolve({
+      type: "machine",
+      name: "Bambu Lab X2D 0.6 nozzle",
+      inherits: "Bambu Lab X2D 0.6 nozzle",
+      from: "system",
+    });
+
+    expect(result.machine_start_gcode).toBe(REAL_START);
+  });
+
+  it("still falls back to the root template for keys with no companion", async () => {
+    const result = await resolve({
+      type: "machine",
+      name: "Bambu Lab X2D 0.4 nozzle",
+      inherits: "Bambu Lab X2D 0.4 nozzle",
+      from: "system",
+    });
+
+    expect(result.machine_end_gcode).toBe("M104 S0 ; generic end");
+  });
+
+  it("lets the caller's own value win over the companion", async () => {
+    const result = await resolve({
+      type: "machine",
+      name: "MyX2D",
+      inherits: "Bambu Lab X2D 0.4 nozzle",
+      machine_start_gcode: "M104 S0 ; mine",
+    });
+
+    expect(result.machine_start_gcode).toBe("M104 S0 ; mine");
+  });
+
+  it("lets the preset's own inline value win over its companion", async () => {
+    const result = await resolve({
+      type: "machine",
+      name: "Inline Wins 0.4 nozzle",
+      inherits: "Inline Wins 0.4 nozzle",
+      from: "system",
+    });
+
+    expect(result.machine_start_gcode).toBe("M104 S0 ; set in the preset itself");
+  });
+
+  it("does not let the companion's bookkeeping fields leak in", async () => {
+    // `name` would rename the preset to "… template machine_start_gcode" and
+    // `instantiation: "false"` would mark it unusable.
+    const result = await resolve({
+      type: "machine",
+      name: "Bambu Lab X2D 0.4 nozzle",
+      inherits: "Bambu Lab X2D 0.4 nozzle",
+      from: "system",
+    });
+
+    expect(result.name).toBe("Bambu Lab X2D 0.4 nozzle");
+    expect(result.instantiation).toBe("true");
+    expect(result.type).toBe("machine");
+  });
+
+  it("refuses a malformed companion instead of slicing without it", async () => {
+    await expect(
+      resolve({
+        type: "machine",
+        name: "Broken 0.4 nozzle",
+        inherits: "Broken 0.4 nozzle",
+        from: "system",
+      }),
+    ).rejects.toThrow(/template is not valid JSON/);
+  });
+
+  it("resolves normally when the category has no bundled directory", async () => {
+    const result = await resolveProfile(
+      { type: "process", name: "p", inherits: "nothing_here" },
+      "process",
+      { bundledProfilesPath },
+    );
+
+    expect(result.name).toBe("p");
+    expect(result.inherits).toBeUndefined();
+  });
+});

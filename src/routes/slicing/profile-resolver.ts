@@ -17,6 +17,41 @@ export interface ResolveOptions {
 
 const DEFAULT_MAX_DEPTH = 16;
 
+// Bundled presets may keep a setting in a companion file named
+// `<preset name> template <setting key>.json` instead of inline. Nothing in
+// the preset itself points at them — the GUI finds them by this name — so a
+// resolver that only walks `inherits` never sees them.
+//
+// It is not a corner case. Every one of the 56 instantiable BBL machine
+// presets omits `machine_start_gcode` from its own file and from every
+// ancestor bar `fdm_machine_common`, whose value is a 577-character generic
+// stub. 29 of them ship the real block — 6.5 KB to 21 KB, per model — in a
+// companion; the remaining 27 are the 0.2/0.6/0.8 nozzle variants, which
+// inherit from their 0.4 sibling and so pick the companion up through the
+// walk below. The same layout carries machine_end_gcode,
+// change_filament_gcode, layer_change_gcode and time_lapse_gcode.
+//
+// Losing machine_start_gcode is not cosmetic: it holds the `M620` AMS load
+// macros and the `M1002 gcode_claim_action` calls, so a print sliced without
+// it heats the bed, moves the toolhead and extrudes nothing while reporting
+// no preparation stage (bambuddy#2838).
+const TEMPLATE_MARKER = " template ";
+
+// Copied from a companion only when the preset does not define the key
+// itself, so these identity fields never leak across. `name` would rename
+// the preset to "… template machine_start_gcode" and `instantiation: false`
+// would mark it unusable — both are the companion's own bookkeeping, not
+// settings it contributes.
+const TEMPLATE_IDENTITY_KEYS = new Set([
+  "name",
+  "inherits",
+  "instantiation",
+  "type",
+  "from",
+]);
+
+type TemplateIndex = Map<string, string[]>;
+
 // `--load-settings` does not run the GUI's preset-registry resolver.
 // Required fields like layer_change_gcode live on parent templates
 // (fdm_machine_common etc.) that the CLI will NOT pull in implicitly.
@@ -33,6 +68,13 @@ export async function resolveProfile(
   let current: ProfileJson = { ...profile };
   stripUserSentinels(current);
   let depth = 0;
+
+  // One listing for the whole walk rather than a probe per ancestor per
+  // candidate key — and it discovers the keys instead of hardcoding today's
+  // five, so a companion for a new setting in a future bundle is picked up.
+  const templates = await readTemplateIndex(
+    path.join(options.bundledProfilesPath, category),
+  );
 
   while (
     typeof current.inherits === "string" &&
@@ -72,6 +114,14 @@ export async function resolveProfile(
       );
     }
 
+    // Fold the companions into the ancestor *before* merging, so they carry
+    // that ancestor's precedence: below anything a descendant or the user's
+    // own delta already set, above whatever the ancestor's own parents
+    // provide. That ordering is what makes the generic
+    // `fdm_machine_common` value lose to the model's real block, and what
+    // lets a 0.6 nozzle preset inherit its 0.4 sibling's companion.
+    await applyCompanionTemplates(parent, parentName, category, options, templates);
+
     current = mergeProfiles(parent, current);
     depth += 1;
   }
@@ -94,6 +144,104 @@ export async function resolveProfile(
   }
 
   return current;
+}
+
+/**
+ * Index the companion files in a bundled category by the preset they belong to.
+ *
+ * `Bambu Lab X2D 0.4 nozzle template machine_start_gcode.json` is indexed
+ * under `Bambu Lab X2D 0.4 nozzle`. A missing directory yields an empty
+ * index: a category with no bundled tree simply has no companions, which is
+ * the same outcome the inherits walk already produces for it.
+ */
+async function readTemplateIndex(dir: string): Promise<TemplateIndex> {
+  const index: TemplateIndex = new Map();
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return index;
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+    const base = entry.slice(0, -".json".length);
+    // Last occurrence, so the owner keeps every earlier word: the marker is
+    // a separator before the setting key, not a token that can appear only
+    // once. Index 0 would mean a file named " template x.json" with no owner.
+    const marker = base.lastIndexOf(TEMPLATE_MARKER);
+    if (marker <= 0) {
+      continue;
+    }
+    const owner = base.slice(0, marker);
+    const existing = index.get(owner);
+    if (existing) {
+      existing.push(base);
+    } else {
+      index.set(owner, [base]);
+    }
+  }
+
+  return index;
+}
+
+/**
+ * Merge `name`'s companion files into `profile`, in place.
+ *
+ * A companion only fills a key the preset's own file leaves unset. No preset
+ * in the bundle both defines one of these settings inline and ships a
+ * companion for it, so the rule is unobservable there — it is chosen so that
+ * an explicit value in the preset itself is never silently overwritten by a
+ * file it does not reference.
+ */
+async function applyCompanionTemplates(
+  profile: ProfileJson,
+  name: string,
+  category: ProfileCategory,
+  options: ResolveOptions,
+  index: TemplateIndex,
+): Promise<void> {
+  for (const companionName of index.get(name) ?? []) {
+    const companionPath = path.join(
+      options.bundledProfilesPath,
+      category,
+      `${companionName}.json`,
+    );
+
+    let raw: string;
+    try {
+      raw = await fs.readFile(companionPath, "utf-8");
+    } catch {
+      // Listed a moment ago, so this is a race or a permission problem
+      // rather than a missing companion. Skipping matches how the walk
+      // treats an unreadable ancestor.
+      continue;
+    }
+
+    let companion: ProfileJson;
+    try {
+      companion = JSON.parse(raw) as ProfileJson;
+    } catch (err) {
+      // Loud, like the parent path: swallowing this would put us back to
+      // slicing with a silently generic start gcode, which is the failure
+      // this whole mechanism exists to prevent.
+      throw new AppError(
+        500,
+        `Bundled profile template is not valid JSON: "${companionName}"`,
+        `category=${category} path=${companionPath} ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    for (const [key, value] of Object.entries(companion)) {
+      if (TEMPLATE_IDENTITY_KEYS.has(key) || key in profile) {
+        continue;
+      }
+      profile[key] = value;
+    }
+  }
 }
 
 /**
