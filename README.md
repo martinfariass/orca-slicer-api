@@ -82,7 +82,7 @@ curl http://localhost:3001/health
 `Dockerfile.bambu-studio` reuses the same Node wrapper as the OrcaSlicer
 image — BambuStudio's CLI accepts the same `--load-settings` / `--slice`
 flags, so only the bundled AppImage and a few env vars differ. Pin the
-BambuStudio version with `BAMBU_VERSION=02.07.01.62 docker compose ...`
+BambuStudio version with `BAMBU_VERSION=02.08.02.61 docker compose ...`
 (Ubuntu 22.04 AppImage variant — Fedora was dropped upstream after v02.06.x).
 
 > **Slicing Bambu-authored 3MFs?** OrcaSlicer still has known CLI bugs

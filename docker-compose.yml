@@ -68,8 +68,8 @@ services:
       context: .
       dockerfile: Dockerfile.bambu-studio
       args:
-        BAMBU_VERSION: "${BAMBU_VERSION:-02.07.01.62}"
-    image: bambu-studio-api:bambu${BAMBU_VERSION:-02.07.01.62}
+        BAMBU_VERSION: "${BAMBU_VERSION:-02.08.02.61}"
+    image: bambu-studio-api:bambu${BAMBU_VERSION:-02.08.02.61}
     container_name: bambu-studio-api
     restart: unless-stopped
     ports:

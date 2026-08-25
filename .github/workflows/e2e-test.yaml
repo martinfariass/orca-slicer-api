@@ -13,7 +13,7 @@ on:
       bambu_version:
         description: "BambuStudio version to test (bambu-studio matrix slot)"
         required: false
-        default: "02.07.01.62"
+        default: "02.08.02.61"
 
 jobs:
   test:
