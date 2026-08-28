@@ -415,6 +415,39 @@
         }
       }
     },
+    "/profiles/bundled": {
+      "get": {
+        "tags": ["Profiles"],
+        "summary": "List the slicer's own bundled profiles",
+        "description": "Index of the read-only profile tree shipped inside the slicer image (`resources/profiles/BBL`), by slot. Abstract bases are omitted -- only presets a user can actually pick are listed -- but they are read through, so the inherited fields below carry the value the slicer itself would resolve. Cached in-process for an hour, since the tree only changes when the image is rebuilt. Answers 200 with empty arrays, not an error, when the bundled tree cannot be located.",
+        "responses": {
+          "200": {
+            "description": "Bundled profiles by slot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "printer": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/BundledPreset" }
+                    },
+                    "process": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/BundledProcess" }
+                    },
+                    "filament": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/BundledFilament" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/profiles/{category}": {
       "post": {
         "tags": ["Profiles"],
@@ -671,6 +704,53 @@
             "description": "Error message (only present when status is 'failed')"
           }
         }
+      },
+      "BundledPreset": {
+        "type": "object",
+        "description": "One entry of the bundled-profile index.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Preset name, which is also how the slicer resolves it through `inherits`."
+          },
+          "base_id": {
+            "type": ["string", "null"],
+            "description": "The preset this one inherits from, or null when it inherits from nothing."
+          }
+        }
+      },
+      "BundledProcess": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BundledPreset" },
+          {
+            "type": "object",
+            "properties": {
+              "compatible_printers": {
+                "type": ["array", "null"],
+                "items": { "type": "string" },
+                "description": "Printer-preset names this profile declares itself usable on, resolved through the `inherits` chain. null means the profile named none, which is not the same as naming an empty set: only the former may be answered by guessing the printer from the profile name. Several Bambu printers ship no profiles under their own name -- every P1S process preset is named `@BBL X1C` and names the P1S only here."
+              }
+            }
+          }
+        ]
+      },
+      "BundledFilament": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BundledProcess" },
+          {
+            "type": "object",
+            "properties": {
+              "filament_type": {
+                "type": ["string", "null"],
+                "description": "Material of the first extruder slot, resolved through the `inherits` chain -- in the shipped BBL bundle it sits one to four hops above the leaf and no leaf carries it. null when no ancestor defines it, which is the case for the 32 shipped profiles that inherit from a parent the bundle does not contain."
+              },
+              "filament_colour": {
+                "type": ["string", "null"],
+                "description": "Colour of the first extruder slot, resolved the same way. Always null across the BBL bundle -- colour is a runtime spool attribute rather than a profile one -- and populated only for third-party bundles that set it."
+              }
+            }
+          }
+        ]
       }
     }
   }

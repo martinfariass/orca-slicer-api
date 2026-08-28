@@ -29,21 +29,45 @@ const router = Router();
 // slicer's read-only `resources/profiles/BBL/` tree, which only changes when
 // the container image is rebuilt — a long TTL is safe and avoids re-reading
 // hundreds of JSON files on every Slice modal open. `null` = "not yet built".
-type BundledFilament = {
+export type BundledEntry = {
   name: string;
   base_id: string | null;
-  // Filament-only metadata. Bambuddy uses these to pre-pick a profile per
-  // plate slot in the SliceModal multi-color flow. Bundled BBL profiles
-  // commonly carry `filament_type` on the leaf preset; `filament_colour` is
-  // typically missing on bundled profiles (color is a runtime spool attribute,
-  // not a profile attribute) but populated when present so the consumer can
-  // do exact-match where possible.
+};
+export type BundledCompatEntry = BundledEntry & {
+  // Printer-preset names this profile declares itself usable on. Bambuddy
+  // filters its process / filament dropdowns by the selected printer, and
+  // this list is the only truthful source for that: several Bambu printers
+  // ship NO profiles under their own name and rely entirely on being named
+  // here by another model's profile. The P1S is the clearest case -- all ten
+  // of its process presets are named `@BBL X1C` and list
+  // "Bambu Lab P1S 0.4 nozzle" in `compatible_printers`. A consumer left to
+  // infer the printer from the profile NAME reads every one of them as
+  // belonging to an X1 Carbon, which is how a P1S ended up being offered an
+  // A1 process (Bambuddy #2982). Same for the X1, the X1E and the H2D Pro.
+  compatible_printers: string[] | null;
+};
+export type BundledFilament = BundledCompatEntry & {
+  // Filament-only metadata, used by Bambuddy to pre-pick a profile per plate
+  // slot in the SliceModal multi-color flow.
+  //
+  // `filament_type` is resolved through the `inherits` chain, NOT read off
+  // the leaf: in the shipped BBL bundle it sits one to four hops up
+  // (`Bambu ABS @BBL A1` -> `Bambu ABS @base` -> `fdm_filament_abs`) and
+  // exactly zero of the 1156 instantiable leaves carry it themselves. Reading
+  // only the leaf returned null for every profile, which cost the consumer
+  // its entire material-matching signal and let a PETG preset be auto-picked
+  // for a PLA plate (#2982).
+  //
+  // `filament_colour` is resolved the same way but is genuinely absent from
+  // the whole bundle -- no BBL filament profile carries a colour at any depth,
+  // because colour is a runtime spool attribute rather than a profile one. It
+  // stays in the response for third-party bundles that do set it.
   filament_type: string | null;
   filament_colour: string | null;
 };
 type BundledIndex = {
-  printer: { name: string; base_id: string | null }[];
-  process: { name: string; base_id: string | null }[];
+  printer: BundledEntry[];
+  process: BundledCompatEntry[];
   filament: BundledFilament[];
 };
 let bundledIndexCache: BundledIndex | null = null;
@@ -68,11 +92,14 @@ router.get("/bundled", async (_req, res) => {
   }
 
   const result: BundledIndex = {
-    printer: await readBundledDir(path.join(bundledPath, "machine"), false),
-    process: await readBundledDir(path.join(bundledPath, "process"), false),
+    printer: await readBundledDir(path.join(bundledPath, "machine"), "printer"),
+    process: (await readBundledDir(
+      path.join(bundledPath, "process"),
+      "process",
+    )) as BundledCompatEntry[],
     filament: (await readBundledDir(
       path.join(bundledPath, "filament"),
-      true,
+      "filament",
     )) as BundledFilament[],
   };
   bundledIndexCache = result;
@@ -80,10 +107,18 @@ router.get("/bundled", async (_req, res) => {
   res.status(200).json(result);
 });
 
-async function readBundledDir(
+/**
+ * Index one category directory of a bundled-profile tree.
+ *
+ * Exported for unit tests: the inherited-field resolution below is the only
+ * reason a P1S sees any process preset at all, and it is worth pinning against
+ * a fixture tree rather than only against whichever slicer build the image
+ * happens to carry.
+ */
+export async function readBundledDir(
   dir: string,
-  includeFilamentMetadata: boolean,
-): Promise<({ name: string; base_id: string | null } | BundledFilament)[]> {
+  kind: "printer" | "process" | "filament",
+): Promise<BundledEntry[]> {
   if (!fs.existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -91,34 +126,18 @@ async function readBundledDir(
   } catch {
     return [];
   }
-  const out: ({ name: string; base_id: string | null } | BundledFilament)[] = [];
+
+  // Read the whole directory up front, abstract bases included. The bases are
+  // never offered to the user, but they are where the inherited fields
+  // actually live, so the walk below needs them in hand.
+  const byName = new Map<string, BundledProfile>();
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
-    const filePath = path.join(dir, entry);
     try {
-      const raw = await fs.promises.readFile(filePath, "utf8");
-      const json = JSON.parse(raw) as {
-        name?: string;
-        inherits?: string;
-        instantiation?: string;
-        filament_type?: string | string[];
-        filament_colour?: string | string[];
-      };
-      // Bundled profiles ship a mix of concrete presets and abstract bases
-      // (e.g. `fdm_filament_pla`). Skip the latter so the slicer modal only
-      // offers things a user can actually pick. `instantiation:"true"` is the
-      // BBL convention for "this is a leaf preset".
-      if (json.instantiation && json.instantiation !== "true") continue;
-      if (!json.name) continue;
-      const base = { name: json.name, base_id: json.inherits ?? null };
-      if (includeFilamentMetadata) {
-        out.push({
-          ...base,
-          filament_type: firstScalar(json.filament_type),
-          filament_colour: firstScalar(json.filament_colour),
-        });
-      } else {
-        out.push(base);
+      const raw = await fs.promises.readFile(path.join(dir, entry), "utf8");
+      const json = JSON.parse(raw) as BundledProfile;
+      if (typeof json.name === "string" && json.name.length > 0) {
+        byName.set(json.name, json);
       }
     } catch {
       // Corrupted / unreadable individual file — skip without breaking the
@@ -126,9 +145,106 @@ async function readBundledDir(
       continue;
     }
   }
+
+  const out: BundledEntry[] = [];
+  for (const json of byName.values()) {
+    // Bundled profiles ship a mix of concrete presets and abstract bases
+    // (e.g. `fdm_filament_pla`). Skip the latter so the slicer modal only
+    // offers things a user can actually pick. `instantiation:"true"` is the
+    // BBL convention for "this is a leaf preset".
+    if (json.instantiation && json.instantiation !== "true") continue;
+    if (!json.name) continue;
+    const base: BundledEntry = { name: json.name, base_id: json.inherits ?? null };
+    if (kind === "printer") {
+      out.push(base);
+      continue;
+    }
+    const compat: BundledCompatEntry = {
+      ...base,
+      compatible_printers: stringList(
+        inheritedField(byName, json, "compatible_printers"),
+      ),
+    };
+    if (kind === "process") {
+      out.push(compat);
+      continue;
+    }
+    const filament: BundledFilament = {
+      ...compat,
+      filament_type: firstScalar(
+        inheritedField(byName, json, "filament_type") as
+          | string
+          | string[]
+          | undefined,
+      ),
+      filament_colour: firstScalar(
+        inheritedField(byName, json, "filament_colour") as
+          | string
+          | string[]
+          | undefined,
+      ),
+    };
+    out.push(filament);
+  }
   // Stable alphabetical order by name so the dropdown is predictable.
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+export type BundledProfile = Record<string, unknown> & {
+  name?: string;
+  inherits?: string;
+  instantiation?: string;
+};
+
+// A profile that inherits from a missing parent ends the walk with whatever it
+// has. 32 of the shipped BBL filament profiles do exactly that -- their
+// `inherits` names a file the bundle does not contain -- so this has to be a
+// silent stop, the same way the slicing resolver treats a dangling `inherits`.
+const MAX_INHERITS_DEPTH = 12;
+
+/**
+ * First definition of ``key`` at or above ``profile`` in its ``inherits``
+ * chain, or ``undefined`` when no ancestor defines it.
+ *
+ * A child's own value wins, which is what makes this a resolution rather than
+ * a lookup: `Bambu PLA Basic @BBL A1` overriding a base's `compatible_printers`
+ * must not be answered with the base's list. The visited set guards against a
+ * cycle in a hand-edited bundle -- the shipped ones have none, but this runs
+ * over whatever tree the image happens to carry.
+ */
+export function inheritedField(
+  byName: Map<string, BundledProfile>,
+  profile: BundledProfile,
+  key: string,
+): unknown {
+  let current: BundledProfile | undefined = profile;
+  const seen = new Set<string>();
+  for (let depth = 0; current && depth <= MAX_INHERITS_DEPTH; depth += 1) {
+    if (key in current) return current[key];
+    const parent = current.inherits;
+    if (typeof parent !== "string" || parent.length === 0 || seen.has(parent)) {
+      return undefined;
+    }
+    seen.add(parent);
+    current = byName.get(parent);
+  }
+  return undefined;
+}
+
+function stringList(value: unknown): string[] | null {
+  // A single-printer profile may store a bare string where the convention is
+  // a list. Anything that isn't usable returns null rather than an empty
+  // array: the consumer distinguishes "declares no printers" (never true in
+  // practice) from "said nothing", and only the latter may fall back to
+  // guessing the printer from the profile name.
+  const raw = typeof value === "string" ? [value] : value;
+  if (!Array.isArray(raw)) return null;
+  const names = raw
+    .filter((name): name is string => typeof name === "string")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  return names.length > 0 ? names : null;
 }
 
 function firstScalar(value: string | string[] | undefined): string | null {
@@ -137,7 +253,10 @@ function firstScalar(value: string | string[] | undefined): string | null {
   // For pre-pick matching the first slot is what matters; the caller already
   // knows which slot it's matching to and a per-slot value isn't meaningful
   // on a bundled profile that hasn't been bound to a specific extruder yet.
-  if (Array.isArray(value)) return value[0] ?? null;
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return typeof first === "string" && first.length > 0 ? first : null;
+  }
   if (typeof value === "string" && value.length > 0) return value;
   return null;
 }
