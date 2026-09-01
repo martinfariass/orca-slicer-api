@@ -6,6 +6,7 @@ import profiles from "./routes/profiles/route";
 import asyncSlicing from "./routes/slicing/async.route";
 import slicing from "./routes/slicing/route";
 import cors from "cors";
+import { recoverStaleSliceWorkspaces } from "./routes/slicing/temp-workspaces";
 
 export const configureApp = () => {
   const app = express();
@@ -62,7 +63,14 @@ if (process.env.NODE_ENV !== "production") {
 // through `vi.resetModules()` -- so the module-level listen raced its own
 // earlier instances for port 3000 and printed "App listening" once per import.
 if (process.env.NODE_ENV !== "test") {
-  app.listen(port, () => {
-    console.log(`App listening on port ${port}`);
-  });
+  void recoverStaleSliceWorkspaces()
+    .then(() => {
+      app.listen(port, () => {
+        console.log(`App listening on port ${port}`);
+      });
+    })
+    .catch((error) => {
+      console.error("Failed to recover stale slicer workspaces before startup:", error);
+      process.exitCode = 1;
+    });
 }

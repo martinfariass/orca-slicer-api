@@ -1,6 +1,5 @@
 import { promises as fs, createReadStream } from "fs";
 import * as path from "path";
-import * as os from "os";
 import { spawn, execFile } from "child_process";
 import { AppError } from "../../middleware/error";
 import type {
@@ -20,6 +19,11 @@ import {
 } from "./profile-resolver";
 import { progressStore, parseProgressLine } from "./progress-store";
 import { resolveBundlePresetPath } from "../profiles/bundle.service";
+import {
+  assertTempCapacity,
+  cleanupSliceWorkspace,
+  createSliceWorkspace,
+} from "./temp-workspaces";
 
 /**
  * Where the model to slice comes from.
@@ -29,6 +33,10 @@ import { resolveBundlePresetPath } from "../profiles/bundle.service";
  * The Buffer form stays for callers that already hold the bytes.
  */
 export type ModelSource = Buffer | { path: string };
+
+export interface SliceExecutionOptions {
+  signal?: AbortSignal;
+}
 
 /**
  * Put the model at `inPath` inside the slice workdir.
@@ -60,6 +68,7 @@ export async function sliceModel(
   filename: string,
   settings: SlicingSettings,
   tempProfiles?: UploadedProfiles,
+  execution: SliceExecutionOptions = {},
 ): Promise<SliceResult> {
   // Checked before anything is created on disk. This used to sit just above
   // the spawn, by which point the workdir existed and held a full copy of the
@@ -73,20 +82,31 @@ export async function sliceModel(
     );
   }
 
-  let workdir: string;
+  const modelBytes = Buffer.isBuffer(file) ? file.length : (await fs.stat(file.path)).size;
+  await assertTempCapacity(modelBytes);
+
+  let workdir = "";
   let inPath: string;
   let inputDir: string;
   let outputDir: string;
+  let slicerTempDir: string;
   try {
-    workdir = await fs.mkdtemp(path.join(os.tmpdir(), "slice-"));
+    workdir = await createSliceWorkspace(settings.requestId);
     inputDir = path.join(workdir, "input");
     outputDir = path.join(workdir, "output");
+    // Keep Bambu Studio's TMPDIR empty and private. Its startup code expects
+    // to own the temp root; pointing it at the workspace root (which already
+    // contains our marker/profile files) can crash during config bootstrap.
+    // The directory still lives under the job lease and is deleted with it.
+    slicerTempDir = path.join(workdir, "runtime");
     await fs.mkdir(inputDir, { recursive: true });
     await fs.mkdir(outputDir, { recursive: true });
+    await fs.mkdir(slicerTempDir, { mode: 0o700 });
 
     inPath = path.join(inputDir, filename);
     await placeModelFile(file, inPath);
   } catch (error) {
+    if (workdir) await cleanupSliceWorkspace(workdir);
     throw new AppError(
       500,
       "Failed to prepare slicing",
@@ -184,7 +204,7 @@ export async function sliceModel(
       if (p) filamentPaths.push(p);
     }
   } catch (error) {
-    await fs.rm(workdir, { recursive: true, force: true });
+    await cleanupSliceWorkspace(workdir);
     throw error;
   }
 
@@ -262,10 +282,18 @@ export async function sliceModel(
   }
   try {
     await new Promise<void>((resolve, reject) => {
+      if (execution.signal?.aborted) {
+        const error = new Error("Slicer request was cancelled before launch");
+        error.name = "AbortError";
+        reject(error);
+        return;
+      }
+
       const child = spawn(process.env.ORCASLICER_PATH as string, args, {
-        // Inherit env so DISPLAY / XDG_* etc. (used by some slicer plugins)
-        // remain consistent with the previous execFile invocation.
-        env: process.env,
+        // Bambu Studio creates its private bamboo_model tree below TMPDIR.
+        // Scoping TMPDIR to the unique job workspace makes that otherwise-
+        // global lock/config/extraction state part of the same cleanup lease.
+        env: { ...process.env, TMPDIR: slicerTempDir },
       });
       // Buffer stdout/stderr — same 16MB cap the old execFile path used.
       const STDOUT_LIMIT = 16 * 1024 * 1024;
@@ -285,10 +313,43 @@ export async function sliceModel(
           stderrLen += chunk.length;
         }
       });
-      child.on("error", reject);
+      let abortRequested = false;
+      let killTimer: NodeJS.Timeout | undefined;
+      const finish = () => {
+        execution.signal?.removeEventListener("abort", abort);
+        if (killTimer) clearTimeout(killTimer);
+      };
+      const signalChild = (signal: NodeJS.Signals) => {
+        // Bambu Studio crashes during StaticPrintConfigs initialization when
+        // launched as a detached session leader under its supported AppImage
+        // runtime. Signal the supervised CLI directly and do not remove its
+        // workspace until the child has emitted its terminal exit event.
+        child.kill(signal);
+      };
+      const abort = () => {
+        if (abortRequested) return;
+        abortRequested = true;
+        signalChild("SIGTERM");
+        killTimer = setTimeout(() => signalChild("SIGKILL"), 5000);
+        killTimer.unref();
+      };
+      execution.signal?.addEventListener("abort", abort, { once: true });
+      if (execution.signal?.aborted) abort();
+
+      child.on("error", (error) => {
+        finish();
+        reject(error);
+      });
       child.on("exit", (code, signal) => {
+        finish();
         cliStdout = Buffer.concat(stdoutChunks).toString("utf-8");
         cliStderr = Buffer.concat(stderrChunks).toString("utf-8");
+        if (abortRequested) {
+          const error = new Error("Slicer request was cancelled");
+          error.name = "AbortError";
+          reject(error);
+          return;
+        }
         if (code === 0) {
           resolve();
         } else {
@@ -298,15 +359,17 @@ export async function sliceModel(
       });
     });
   } catch (err) {
-    if (progressReader) progressReader.close();
-    if (requestId) progressStore.finish(requestId);
+    if ((err as Error).name === "AbortError") {
+      await cleanupSliceWorkspace(workdir);
+      throw new AppError(499, "Slicing cancelled", "The client disconnected or its slicer watchdog expired.");
+    }
     const resultJsonPath = path.join(outputDir, "result.json");
     let json;
     try {
       const content = await fs.readFile(resultJsonPath, "utf-8");
       json = JSON.parse(content);
     } catch {
-      await fs.rm(workdir, { recursive: true, force: true });
+      await cleanupSliceWorkspace(workdir);
       throw new AppError(
         500,
         "Failed to slice the model",
@@ -315,7 +378,7 @@ export async function sliceModel(
     }
 
     if (json?.error_string) {
-      await fs.rm(workdir, { recursive: true, force: true });
+      await cleanupSliceWorkspace(workdir);
       throw new AppError(
         500,
         `Slicing failed with error from slicer: ${json.error_string}`,
@@ -323,21 +386,26 @@ export async function sliceModel(
       );
     }
 
-    await fs.rm(workdir, { recursive: true, force: true });
+    await cleanupSliceWorkspace(workdir);
     throw new AppError(
       500,
       "Failed to slice the model",
       formatCliFailure(err, cliStdout, cliStderr),
     );
+  } finally {
+    if (progressReader) progressReader.close();
+    if (requestId) progressStore.finish(requestId);
   }
 
-  // Slice succeeded — close the progress reader and schedule the
-  // request_id's grace cleanup so a final poll still sees the terminal
-  // frame ("All done, Success" / total_percent=100).
-  if (progressReader) progressReader.close();
-  if (requestId) progressStore.finish(requestId);
-
-  const files = await fs.readdir(outputDir);
+  // Slice succeeded. The progress store retains its final frame briefly;
+  // the HTTP route owns the workspace until the durable response is sent.
+  let files: string[];
+  try {
+    files = await fs.readdir(outputDir);
+  } catch (error) {
+    await cleanupSliceWorkspace(workdir);
+    throw error;
+  }
   let resultFiles: string[];
 
   if (settings.exportType === "3mf") {
@@ -348,6 +416,11 @@ export async function sliceModel(
     resultFiles = files
       .filter((f) => f.toLowerCase().endsWith(".gcode"))
       .map((f) => path.join(outputDir, f));
+  }
+
+  if (resultFiles.length === 0) {
+    await cleanupSliceWorkspace(workdir);
+    throw new AppError(500, "No files generated during slicing");
   }
 
   return { gcodes: resultFiles, workdir };
