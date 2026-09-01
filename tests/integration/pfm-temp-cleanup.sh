@@ -42,9 +42,9 @@ done
 curl --fail --silent "http://127.0.0.1:${port}/health" | jq -e '.status == "healthy"' >/dev/null
 
 curl --fail --silent "http://127.0.0.1:${port}/profiles/bundled" --output "$work/bundled.json"
-printer=$(jq -r '.printer[] | select(.name | contains("P1P 0.4 nozzle")) | .name' "$work/bundled.json" | head -n 1)
-process=$(jq -r --arg printer "$printer" '.process[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.name | contains("0.20mm Standard")) | .name' "$work/bundled.json" | head -n 1)
-filament=$(jq -r --arg printer "$printer" '.filament[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.filament_type == "PLA") | select(.name | contains("Bambu PLA Basic")) | .name' "$work/bundled.json" | head -n 1)
+printer=$(jq -r 'first(.printer[] | select(.name | contains("P1P 0.4 nozzle")) | .name) // empty' "$work/bundled.json")
+process=$(jq -r --arg printer "$printer" 'first(.process[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.name | contains("0.20mm Standard")) | .name) // empty' "$work/bundled.json")
+filament=$(jq -r --arg printer "$printer" 'first(.filament[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.filament_type == "PLA") | select(.name | contains("Bambu PLA Basic")) | .name) // empty' "$work/bundled.json")
 [[ -n $printer && -n $process && -n $filament ]]
 jq -n --arg name "$printer" '{type:"machine",name:$name,inherits:$name,from:"User"}' >"$work/printer.json"
 jq -n --arg name "$process" '{type:"process",name:$name,inherits:$name,from:"User"}' >"$work/process.json"
