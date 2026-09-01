@@ -1,0 +1,22 @@
+# PFM-compatible Bambu Studio sidecar.
+#
+# The runtime is the exact previously reviewed Bambuddy image. Only the
+# TypeScript wrapper is rebuilt, so the Bambu Studio binary, system packages,
+# bundled profiles, and Node dependency tree remain byte-for-byte inherited
+# from the approved digest.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS wrapper-build
+
+WORKDIR /source
+COPY package*.json tsconfig.json swagger.json ./
+RUN npm ci
+COPY src ./src
+RUN npm run build
+
+FROM ghcr.io/maziggy/bambu-studio-api:bambuddy-1.2.5.5@sha256:e3579efbb568af19c337598853b828ffabd71b031c4180e6a2756377088a936b
+
+COPY --from=wrapper-build /source/dist/src /app/dist
+
+LABEL org.opencontainers.image.title="PFM-compatible Bambu Studio API"
+LABEL org.opencontainers.image.description="Pinned Bambuddy Bambu Studio sidecar with deterministic per-job temp cleanup"
+LABEL org.opencontainers.image.source="https://github.com/martinfariass/orca-slicer-api"
+LABEL com.print-farm-manager.upstream-image="ghcr.io/maziggy/bambu-studio-api:bambuddy-1.2.5.5@sha256:e3579efbb568af19c337598853b828ffabd71b031c4180e6a2756377088a936b"

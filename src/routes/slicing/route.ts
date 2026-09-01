@@ -8,16 +8,49 @@ import type {
 } from "./models";
 import { getMetaDataFromFile, sliceModel } from "./slicing.service";
 import { progressStore } from "./progress-store";
-import fs from "fs/promises";
+import { createReadStream, createWriteStream, promises as fs } from "fs";
 import path from "path";
 import archiver from "archiver";
+import { once } from "events";
+import { finished, pipeline } from "stream/promises";
 import {
   discardUpload,
   generateMetaDataHeaders,
   modelSourceFromUpload,
 } from "./helpers";
+import {
+  cleanupSliceWorkspace,
+  sliceTempStatus,
+} from "./temp-workspaces";
 
 const router = Router();
+
+async function sendAndReleaseWorkspace(
+  res: import("express").Response,
+  filePath: string,
+  downloadName: string,
+  workdir: string,
+): Promise<boolean> {
+  const stat = await fs.stat(filePath);
+  const source = createReadStream(filePath);
+  const open = once(source, "open");
+  source.on("error", () => undefined);
+  await open;
+
+  res.attachment(downloadName);
+  res.set("Content-Length", String(stat.size));
+
+  // On Unix the already-open file descriptor stays readable after unlink.
+  // Removing the workspace before piping the response ensures a caller never
+  // observes a terminal slice while its lock/config tree still exists.
+  const cleaned = await cleanupSliceWorkspace(workdir);
+  await pipeline(source, res);
+  return cleaned;
+}
+
+router.get("/status", async (_req, res) => {
+  res.json(await sliceTempStatus());
+});
 
 // Live progress endpoint. Bambuddy generates a request_id when it submits
 // to POST /slice and polls this in parallel (the POST holds the
@@ -67,72 +100,79 @@ router.post(
     }
 
     const modelFile = files["file"][0];
+    const abortController = new AbortController();
+    const abortSlice = () => {
+      if (!res.writableFinished) abortController.abort();
+    };
+    req.once("aborted", abortSlice);
+    res.once("close", abortSlice);
 
-    let sliced;
+    let workdir: string | undefined;
     try {
-      sliced = await sliceModel(
-        modelSourceFromUpload(modelFile),
-        modelFile.originalname,
-        req.body as SlicingSettings,
-        {
-          printer: files["printerProfile"]?.[0]?.buffer,
-          preset: files["presetProfile"]?.[0]?.buffer,
-          filaments: files["filamentProfile"]?.map((f) => f.buffer) ?? [],
-        } as UploadedProfiles,
-      );
-    } finally {
-      // No-op once sliceModel has moved the upload into its workdir; the
-      // safety net is for a failure before that point.
-      await discardUpload(modelFile);
-    }
-    const { gcodes, workdir } = sliced;
-
-    if (gcodes.length === 1) {
+      let sliced;
       try {
+        sliced = await sliceModel(
+          modelSourceFromUpload(modelFile),
+          modelFile.originalname,
+          req.body as SlicingSettings,
+          {
+            printer: files["printerProfile"]?.[0]?.buffer,
+            preset: files["presetProfile"]?.[0]?.buffer,
+            filaments: files["filamentProfile"]?.map((f) => f.buffer) ?? [],
+          } as UploadedProfiles,
+          { signal: abortController.signal },
+        );
+      } finally {
+        // No-op once sliceModel has moved the upload into its workdir; the
+        // safety net is for a failure before that point.
+        await discardUpload(modelFile);
+      }
+      const { gcodes } = sliced;
+      workdir = sliced.workdir;
+
+      if (gcodes.length === 1) {
         const metadata = await getMetaDataFromFile(gcodes[0]);
         res.set(generateMetaDataHeaders(metadata));
+        const cleaned = await sendAndReleaseWorkspace(
+          res,
+          gcodes[0],
+          path.basename(gcodes[0]),
+          workdir,
+        );
+        if (cleaned) workdir = undefined;
+      } else {
+        const metadata: SliceMetaData = {
+          printTime: 0,
+          filamentUsedG: 0,
+          filamentUsedMm: 0,
+        };
 
-        res.download(gcodes[0]);
-      } finally {
-        await fs.rm(workdir, { recursive: true, force: true });
+        for (const filePath of gcodes) {
+          if (!filePath.endsWith(".gcode")) continue;
+
+          const fileMetadata = await getMetaDataFromFile(filePath);
+          metadata.printTime += fileMetadata.printTime;
+          metadata.filamentUsedG += fileMetadata.filamentUsedG;
+          metadata.filamentUsedMm += fileMetadata.filamentUsedMm;
+        }
+
+        res.set(generateMetaDataHeaders(metadata));
+        const archivePath = path.join(workdir, "result.zip");
+        const archive = archiver("zip", { zlib: { level: 9 } });
+        const archiveOutput = createWriteStream(archivePath, { mode: 0o600 });
+        archive.pipe(archiveOutput);
+        gcodes.forEach((filePath) => {
+          archive.file(filePath, { name: path.basename(filePath) });
+        });
+        await archive.finalize();
+        await finished(archiveOutput);
+        const cleaned = await sendAndReleaseWorkspace(res, archivePath, "result.zip", workdir);
+        if (cleaned) workdir = undefined;
       }
-    } else if (gcodes.length > 1) {
-      const metadata: SliceMetaData = {
-        printTime: 0,
-        filamentUsedG: 0,
-        filamentUsedMm: 0,
-      };
-
-      for (const filePath of gcodes) {
-        if (!filePath.endsWith(".gcode")) continue;
-
-        const fileMetadata = await getMetaDataFromFile(filePath);
-        metadata.printTime += fileMetadata.printTime;
-        metadata.filamentUsedG += fileMetadata.filamentUsedG;
-        metadata.filamentUsedMm += fileMetadata.filamentUsedMm;
-      }
-
-      res.set(generateMetaDataHeaders(metadata));
-
-      res.attachment("result.zip");
-      const archive = archiver("zip", { zlib: { level: 9 } });
-
-      archive.on("error", (err) => {
-        throw new AppError(500, `Error creating archive: ${err.message}`);
-      });
-
-      res.on("finish", async () => {
-        await fs.rm(workdir, { recursive: true, force: true });
-      });
-
-      archive.pipe(res);
-      gcodes.forEach((filePath) => {
-        archive.file(filePath, { name: path.basename(filePath) });
-      });
-
-      await archive.finalize();
-    } else {
-      throw new AppError(500, "No files generated during slicing");
+    } finally {
+      req.off("aborted", abortSlice);
+      res.off("close", abortSlice);
+      if (workdir) await cleanupSliceWorkspace(workdir);
     }
   },
 );
