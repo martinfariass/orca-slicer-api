@@ -3,11 +3,13 @@ name: PFM slicer cleanup
 on:
   pull_request:
   push:
-    branches:
-      - "fix/pfm-slicer-temp-cleanup"
     tags:
       - "pfm-bambu-*"
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
