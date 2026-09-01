@@ -12,7 +12,7 @@ cleanup() {
   trap - EXIT INT TERM
   if (( status != 0 )); then
     docker logs "$container" >&2 2>/dev/null || true
-    for artifact in "$work"/result-*.gcode.3mf "$work"/failure.json; do
+    for artifact in "$work"/failure.json; do
       [[ -f $artifact ]] || continue
       echo "--- failure response: $artifact" >&2
       head -c 4096 "$artifact" >&2 || true
@@ -71,18 +71,19 @@ for iteration in 1 2 3; do
   assert_clean
 done
 
+printf 'not-json\n' >"$work/invalid-process.json"
 status=$(curl --silent --show-error \
   --output "$work/failure.json" \
   --write-out '%{http_code}' \
   --form "file=@tests/files/input/Cube.stl;type=model/stl" \
-  --form "printerProfile=@tests/files/input/printer.json;type=application/json" \
-  --form "presetProfile=@tests/files/input/process.json;type=application/json" \
-  --form "filamentProfile=@tests/files/input/filament.json;type=application/json" \
+  --form "printerProfile=@${work}/printer.json;type=application/json" \
+  --form "presetProfile=@${work}/invalid-process.json;type=application/json" \
+  --form "filamentProfile=@${work}/filament.json;type=application/json" \
   --form-string 'plate=1' \
   --form-string 'exportType=3mf' \
   "http://127.0.0.1:${port}/slice")
-[[ $status == 500 ]]
-jq -e '.message | contains("Slicing failed")' "$work/failure.json" >/dev/null
+[[ $status == 400 ]]
+jq -e '.message | contains("Invalid JSON in uploaded process profile")' "$work/failure.json" >/dev/null
 assert_clean
 
 # Simulate crash residue, restart the container, and prove the bounded tmpfs
