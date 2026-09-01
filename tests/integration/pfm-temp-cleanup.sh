@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'printf "ERROR: line %s command failed: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 [[ $# == 1 ]] || { echo "usage: $0 IMAGE" >&2; exit 2; }
 image=$1
@@ -51,13 +52,22 @@ jq -n --arg name "$process" '{type:"process",name:$name,inherits:$name,from:"Use
 jq -n --arg name "$filament" '{type:"filament",name:$name,inherits:$name,from:"User"}' >"$work/filament.json"
 
 assert_clean() {
-  curl --fail --silent "http://127.0.0.1:${port}/slice/status" \
-    | jq -e '.active_slice_workspaces == 0 and .stale_slice_workspaces == 0 and .temp_bytes_used == 0 and .last_cleanup_failure == null' >/dev/null
-  [[ -z $(docker exec "$container" find /tmp -xdev \( -name 'lock.txt' -o -name '_temp_*.config' -o -name 'slice-*' -o -name 'bamboo_model' \) -print) ]]
+  local payload residue
+  payload=$(curl --fail --silent "http://127.0.0.1:${port}/slice/status")
+  if ! jq -e '.active_slice_workspaces == 0 and .stale_slice_workspaces == 0 and .temp_bytes_used == 0 and .last_cleanup_failure == null' >/dev/null <<<"$payload"; then
+    printf 'ERROR: non-clean sidecar status: %s\n' "$payload" >&2
+    return 1
+  fi
+  residue=$(docker exec "$container" find /tmp -xdev \( -name 'lock.txt' -o -name '_temp_*.config' -o -name 'slice-*' -o -name 'bamboo_model' \) -print)
+  if [[ -n $residue ]]; then
+    printf 'ERROR: residual slicer paths:\n%s\n' "$residue" >&2
+    return 1
+  fi
 }
 
 assert_clean
 for iteration in 1 2 3; do
+  printf 'Successful cleanup case %s...\n' "$iteration"
   curl --fail-with-body --silent --show-error \
     --output "$work/result-${iteration}.gcode.3mf" \
     --form "file=@tests/files/input/Cube.stl;type=model/stl" \
@@ -85,6 +95,7 @@ status=$(curl --silent --show-error \
 [[ $status == 400 ]]
 jq -e '.message | contains("Invalid JSON in uploaded process profile")' "$work/failure.json" >/dev/null
 assert_clean
+echo "Controlled failure cleanup: PASS"
 
 # Simulate crash residue, restart the container, and prove the bounded tmpfs
 # plus startup recovery cannot block the next job with stale lock state.
@@ -101,6 +112,7 @@ for _attempt in {1..90}; do
   sleep 1
 done
 assert_clean
+echo "Crash/restart cleanup: PASS"
 
 curl --fail-with-body --silent --show-error \
   --output "$work/result-after-restart.gcode.3mf" \
