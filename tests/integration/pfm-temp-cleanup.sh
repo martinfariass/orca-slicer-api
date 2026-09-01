@@ -43,13 +43,33 @@ done
 curl --fail --silent "http://127.0.0.1:${port}/health" | jq -e '.status == "healthy"' >/dev/null
 
 curl --fail --silent "http://127.0.0.1:${port}/profiles/bundled" --output "$work/bundled.json"
-printer=$(jq -r 'first(.printer[] | select(.name | contains("P1P 0.4 nozzle")) | .name) // empty' "$work/bundled.json")
-process=$(jq -r --arg printer "$printer" 'first(.process[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.name | contains("0.20mm Standard")) | .name) // empty' "$work/bundled.json")
-filament=$(jq -r --arg printer "$printer" 'first(.filament[] | select((.compatible_printers == null) or (.compatible_printers | index($printer))) | select(.filament_type == "PLA") | select(.name | contains("Bambu PLA Basic")) | .name) // empty' "$work/bundled.json")
-[[ -n $printer && -n $process && -n $filament ]]
-jq -n --arg name "$printer" '{type:"machine",name:$name,inherits:$name,from:"User"}' >"$work/printer.json"
-jq -n --arg name "$process" '{type:"process",name:$name,inherits:$name,from:"User"}' >"$work/process.json"
-jq -n --arg name "$filament" '{type:"filament",name:$name,inherits:$name,from:"User"}' >"$work/filament.json"
+python3 - "$work/bundled.json" "$work" <<'PY'
+import json
+import pathlib
+import sys
+
+profiles=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+out=pathlib.Path(sys.argv[2])
+printer=next(item for item in profiles["printer"] if "P1P 0.4 nozzle" in item["name"])
+printer_name=printer["name"]
+
+def compatible(item):
+    declared=item.get("compatible_printers")
+    return not declared or printer_name in declared
+
+processes=[item for item in profiles["process"] if compatible(item)]
+process=next((item for item in processes if "0.20mm Standard" in item["name"]), processes[0])
+filaments=[item for item in profiles["filament"] if compatible(item) and item.get("filament_type") == "PLA"]
+filament=next((item for item in filaments if "Bambu PLA Basic" in item["name"]), filaments[0])
+for filename, kind, parent in (
+    ("printer.json", "machine", printer_name),
+    ("process.json", "process", process["name"]),
+    ("filament.json", "filament", filament["name"]),
+):
+    value={"type":kind,"name":parent,"inherits":parent,"from":"User"}
+    (out/filename).write_text(json.dumps(value)+"\n",encoding="utf-8")
+print(json.dumps({"printer":printer_name,"process":process["name"],"filament":filament["name"]},sort_keys=True))
+PY
 
 assert_clean() {
   local payload residue
